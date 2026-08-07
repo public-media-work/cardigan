@@ -46,6 +46,10 @@ logs/
 .worktrees/
 .claude/worktrees/
 
+# Per-machine Claude Code settings — local overrides, never shared
+.claude/settings.json
+.claude/settings.local.json
+
 # Database snapshots — keep directory, ignore contents except gitkeep and the v2.1 archive
 .snapshots/*
 !.snapshots/.gitkeep
