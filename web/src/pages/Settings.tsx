@@ -1,11 +1,17 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { usePreferences, TextSize } from '../context/PreferencesContext'
 import { AGENT_INFO } from '../constants/agents'
 import ModelStatsWidget from '../components/ModelStatsWidget'
 import PhaseStatsWidget from '../components/PhaseStatsWidget'
+import RestartComponentsButton from '../components/RestartComponentsButton'
 import { groupAvailableModels } from '../utils/modelGroups'
 import { isRemotePreview } from '../utils/preview'
+
+// Upper bound on the "restarting…" banner. Recovery is normally detected from
+// the status poll; this only stops the banner sticking forever if a component
+// never comes back. Generous enough to cover the worker's 60s drain timeout.
+const RESTART_BANNER_MAX_MS = 90_000
 
 interface AvailableModel {
   id: string
@@ -71,6 +77,7 @@ interface ComponentStatus {
   name: string
   running: boolean
   pid: number | null
+  container?: string | null
 }
 
 interface SystemStatus {
@@ -85,6 +92,10 @@ export default function Settings() {
   const [worker, setWorker] = useState<WorkerConfig | null>(null)
   const [ingestConfig, setIngestConfig] = useState<IngestConfig | null>(null)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
+  const [restarting, setRestarting] = useState(false)
+  const [apiReachable, setApiReachable] = useState(true)
+  // Whether we've observed the stack actually go down since the restart request.
+  const restartDipSeen = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -149,11 +160,50 @@ export default function Settings() {
       if (res.ok) {
         const data = await res.json()
         setSystemStatus(data)
+        setApiReachable(true)
+        return
       }
+      setApiReachable(false)
     } catch {
-      // System status may not be available — non-critical
+      // System status may not be available — non-critical. During a restart
+      // this is the expected "blink", so it must not surface as an error.
+      setApiReachable(false)
     }
   }, [])
+
+  const restartComponents = useCallback(async () => {
+    restartDipSeen.current = false
+    setRestarting(true)
+    try {
+      await fetch('/api/system/restart', { method: 'POST' })
+    } catch {
+      // Expected: the API restarts itself and the socket may drop mid-request.
+    }
+  }, [])
+
+  // Clear the "restarting…" banner on *observed* recovery rather than a fixed
+  // timer: wait until the stack has actually dipped (API unreachable, or the
+  // worker's heartbeat gone stale) and then come back fresh. A fixed timeout
+  // would clear the banner while components were still down on a slow cycle,
+  // and make the user wait on a fast one.
+  useEffect(() => {
+    if (!restarting) return
+
+    if (!apiReachable || systemStatus?.worker.running === false) {
+      restartDipSeen.current = true
+      return
+    }
+    if (restartDipSeen.current && apiReachable && systemStatus?.worker.running) {
+      setRestarting(false)
+    }
+  }, [restarting, apiReachable, systemStatus])
+
+  // Backstop: never let the banner stick if a container doesn't come back.
+  useEffect(() => {
+    if (!restarting) return
+    const cap = setTimeout(() => setRestarting(false), RESTART_BANNER_MAX_MS)
+    return () => clearTimeout(cap)
+  }, [restarting])
 
 
   const fetchBackends = useCallback(async () => {
@@ -953,7 +1003,7 @@ export default function Settings() {
                 <div className="p-4 bg-surface-900 rounded-lg">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
-                      <div className="w-3 h-3 rounded-full bg-status-completed" />
+                      <div className={`w-3 h-3 rounded-full ${systemStatus?.api.running !== false ? 'bg-status-completed' : 'bg-status-pending'}`} />
                       <div>
                         <div className="font-medium text-white">API Server</div>
                         <div className="text-sm text-surface-400">
@@ -962,7 +1012,7 @@ export default function Settings() {
                       </div>
                     </div>
                     <div className="px-3 py-1 text-xs bg-pbs-500/20 text-pbs-400 border border-pbs-500/30 rounded">
-                      Container: cardigan-api
+                      Container: {systemStatus?.api.container ?? 'cardigan-api'}
                     </div>
                   </div>
                 </div>
@@ -982,7 +1032,7 @@ export default function Settings() {
                       </div>
                     </div>
                     <div className="px-3 py-1 text-xs bg-pbs-500/20 text-pbs-400 border border-pbs-500/30 rounded">
-                      Container: cardigan-api
+                      Container: {systemStatus?.worker.container ?? 'cardigan-worker'}
                     </div>
                   </div>
                 </div>
@@ -995,17 +1045,19 @@ export default function Settings() {
                       <div>
                         <div className="font-medium text-white">Transcript Watcher</div>
                         <div className="text-sm text-surface-400">
-                          {systemStatus?.watcher.running
-                            ? 'Running - Managed by Docker'
-                            : 'Managed by Docker'}
+                          {systemStatus?.watcher.running ? 'Running - Managed by Docker' : 'Not deployed'}
                         </div>
                       </div>
                     </div>
                     <div className="px-3 py-1 text-xs bg-pbs-500/20 text-pbs-400 border border-pbs-500/30 rounded">
-                      Container: cardigan-api
+                      Container: {systemStatus?.watcher.container ?? '—'}
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <div className="mt-6">
+                <RestartComponentsButton onConfirm={restartComponents} restarting={restarting} />
               </div>
             </div>
 
@@ -1045,10 +1097,6 @@ export default function Settings() {
                     Manage the containerized system via Docker Compose
                   </p>
                   <div className="space-y-2 text-xs">
-                    <div className="p-2 bg-surface-900 rounded">
-                      <div className="text-surface-400 mb-1">Restart all services:</div>
-                      <code className="text-green-400">docker compose restart</code>
-                    </div>
                     <div className="p-2 bg-surface-900 rounded">
                       <div className="text-surface-400 mb-1">View logs:</div>
                       <code className="text-green-400">docker compose logs -f</code>

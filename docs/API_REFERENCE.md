@@ -154,15 +154,18 @@
 
 ## System Control
 ### GET `/api/system/status`
-- Returns process status for API, worker, watcher
+- Returns status for API, worker, watcher (running flag, pid, heartbeat age, container name)
 
-### POST `/api/system/worker/restart`
-### POST `/api/system/worker/start`
-### POST `/api/system/worker/stop`
+### POST `/api/system/restart`
+- Requests a restart of all running components (api + worker; dev watcher if present)
+- Writes a single `restart_requested_at` signal; each component compares it to its own
+  start time and self-restarts, and Docker's `restart: unless-stopped` brings it back
+- Returns `{ requested_at, components, message }` — `components` lists what will actually cycle
+- Mutating → requires `X-API-Key` when `CARDIGAN_API_KEY` is set
 
-### POST `/api/system/watcher/restart`
-### POST `/api/system/watcher/start`
-### POST `/api/system/watcher/stop`
+### POST `/api/system/watcher/heartbeat`
+- Watcher liveness ping; body `{ started_at }` (the watcher's boot time)
+- Returns `{ success, message, restart }` — `restart` is true when a restart request postdates `started_at`
 
 ## Ingest (Remote Server Monitoring)
 ### POST `/api/ingest/scan`

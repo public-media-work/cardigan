@@ -69,8 +69,7 @@ Base URL: `http://cardigan01:8100` (production/homelab) · `http://localhost:810
 
 ### System
 - `GET /api/system/status`
-- `POST /api/system/worker/start|stop|restart`
-- `POST /api/system/watcher/start|stop|restart`
+- `POST /api/system/restart` — request a restart of running components (api + worker; dev watcher if present). Writes one `restart_requested_at` signal; each component self-restarts and Docker's `restart: unless-stopped` brings it back. Returns `{ requested_at, components, message }`. Mutating → requires `X-API-Key` when auth is enabled.
 
 ### Ingest (Remote Server Monitoring)
 - `POST /api/ingest/scan`

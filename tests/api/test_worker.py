@@ -1120,3 +1120,42 @@ class TestProcessJobSpeakerSegmentation:
         # Split form present; original joined caption absent.
         assert ">> Beta replies instead." in user_text
         assert "Alpha speaks now. >> Beta replies instead." not in user_text
+
+
+class TestWorkerRestartSignal:
+    """JobWorker exits when a Settings restart request postdates its start (#304)."""
+
+    @pytest.mark.asyncio
+    async def test_should_stop_for_restart_true_when_request_is_newer(self):
+        with patch("api.services.worker.get_llm_client"):
+            worker = JobWorker(WorkerConfig())
+        worker._start_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with patch(
+            "api.services.worker.get_restart_requested_at",
+            new_callable=AsyncMock,
+            return_value=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        ):
+            assert await worker._should_stop_for_restart() is True
+
+    @pytest.mark.asyncio
+    async def test_should_stop_for_restart_false_when_no_request(self):
+        with patch("api.services.worker.get_llm_client"):
+            worker = JobWorker(WorkerConfig())
+        with patch(
+            "api.services.worker.get_restart_requested_at",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            assert await worker._should_stop_for_restart() is False
+
+    @pytest.mark.asyncio
+    async def test_should_stop_for_restart_false_when_request_predates_start(self):
+        with patch("api.services.worker.get_llm_client"):
+            worker = JobWorker(WorkerConfig())
+        worker._start_time = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        with patch(
+            "api.services.worker.get_restart_requested_at",
+            new_callable=AsyncMock,
+            return_value=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ):
+            assert await worker._should_stop_for_restart() is False

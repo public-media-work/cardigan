@@ -294,12 +294,8 @@ Phases escalate to higher tiers automatically on failure or timeout. See `config
 |--------|----------|-------------|
 | GET | `/api/system/health` | System health check |
 | GET | `/api/system/status` | Detailed system status |
-| POST | `/api/system/worker/start` | Start background worker |
-| POST | `/api/system/worker/stop` | Stop background worker |
-| POST | `/api/system/worker/restart` | Restart background worker |
-| POST | `/api/system/watcher/start` | Start ingest watcher |
-| POST | `/api/system/watcher/stop` | Stop ingest watcher |
-| POST | `/api/system/watcher/restart` | Restart ingest watcher |
+| POST | `/api/system/restart` | Request a restart of all running components |
+| POST | `/api/system/watcher/heartbeat` | Watcher liveness ping (returns the restart flag) |
 
 ### Config (`/api`)
 

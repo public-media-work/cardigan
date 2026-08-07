@@ -10,6 +10,7 @@ from watch_transcripts import (
     get_transcript_files,
     queue_file,
     run_once,
+    send_heartbeat,
     watch_loop,
 )
 
@@ -488,3 +489,36 @@ class TestIntegration:
             assert mock_post.call_count == 1
             call_args = mock_post.call_args
             assert call_args[1]["json"]["transcript_file"] == "new_file.txt"
+
+
+class TestHeartbeatRestart:
+    """send_heartbeat reports the restart flag; watch_loop exits on it (#304)."""
+
+    @patch("watch_transcripts.httpx.post")
+    def test_send_heartbeat_returns_true_when_restart_requested(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"restart": True})
+        assert send_heartbeat() is True
+        # posts its own boot time so the API can compute the flag
+        _, kwargs = mock_post.call_args
+        assert "started_at" in kwargs["json"]
+
+    @patch("watch_transcripts.httpx.post")
+    def test_send_heartbeat_returns_false_when_no_restart(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"restart": False})
+        assert send_heartbeat() is False
+
+    @patch("watch_transcripts.httpx.post", side_effect=Exception("network"))
+    def test_send_heartbeat_returns_false_on_error(self, mock_post):
+        assert send_heartbeat() is False
+
+    @patch("watch_transcripts.time.sleep")
+    @patch("watch_transcripts.queue_file")
+    @patch("watch_transcripts.get_transcript_files", return_value=["new.srt"])
+    @patch("watch_transcripts.get_queued_files", return_value=set())
+    @patch("watch_transcripts.send_heartbeat", return_value=True)
+    def test_watch_loop_exits_when_restart_requested(self, _hb, _q, _f, mock_queue, mock_sleep):
+        # Returns (no infinite loop) because the heartbeat asked to restart —
+        # and exits BEFORE processing files or sleeping.
+        watch_loop()
+        mock_queue.assert_not_called()
+        mock_sleep.assert_not_called()

@@ -1,19 +1,35 @@
 """System management endpoints.
 
-Provides status and restart controls for system components:
-- API server
-- Worker process
-- Transcript watcher
+Provides status and a single "Restart Components" action:
+- GET  /status              — liveness of api / worker / watcher
+- POST /restart             — request a restart of all running components
+- POST /watcher/heartbeat   — watcher liveness ping (+ restart flag back)
+
+Restart uses "Option B": a single ``restart_requested_at`` timestamp in the
+config KV table; each component compares it to its own process start time and
+self-exits, and Docker's ``restart: unless-stopped`` policy brings it back. No
+Docker socket. See docs/superpowers/specs/2026-07-16-system-components-restart-design.md.
 """
 
+import asyncio
 import os
+import signal
 import subprocess
-from typing import Optional
+from datetime import datetime
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
 from api.services import database
+from api.services.logging import get_logger
+from api.services.restart_signal import (
+    get_restart_requested_at,
+    request_restart,
+    should_restart,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -27,6 +43,9 @@ class ComponentStatus(BaseModel):
     # Seconds since the component's last DB heartbeat (None for API, which is
     # detected by port, or if the component has never heartbeated).
     heartbeat_age_seconds: Optional[float] = None
+    # Docker container name for this component, or None if not containerized
+    # (the transcript watcher has no container in the current compose).
+    container: Optional[str] = None
 
 
 class SystemStatus(BaseModel):
@@ -37,11 +56,26 @@ class SystemStatus(BaseModel):
     watcher: ComponentStatus
 
 
-class RestartResponse(BaseModel):
-    """Response from restart operation."""
+class RestartRequestResponse(BaseModel):
+    """Response from the 'Restart Components' action."""
+
+    requested_at: str
+    components: List[str]
+    message: str
+
+
+class WatcherHeartbeatRequest(BaseModel):
+    """Body for the watcher heartbeat (the watcher reports its own boot time)."""
+
+    started_at: Optional[str] = None
+
+
+class WatcherHeartbeatResponse(BaseModel):
+    """Heartbeat ack, plus a restart signal the watcher self-applies."""
 
     success: bool
     message: str
+    restart: bool = False
 
 
 def _find_process(pattern: str) -> Optional[int]:
@@ -74,41 +108,16 @@ def _check_port_in_use(port: int) -> Optional[int]:
         return None
 
 
-def _kill_process(pattern: str) -> bool:
-    """Kill process matching pattern."""
-    try:
-        result = subprocess.run(["pkill", "-f", pattern], capture_output=True, timeout=5)
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _start_component(command: str, log_file: str) -> bool:
-    """Start a component in background."""
-    try:
-        project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        log_path = os.path.join(project_dir, "logs", log_file)
-
-        # Ensure logs directory exists
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-
-        with open(log_path, "a") as log:
-            subprocess.Popen(command, shell=True, cwd=project_dir, stdout=log, stderr=log, start_new_session=True)
-        return True
-    except Exception:
-        return False
-
-
 @router.get("/status", response_model=SystemStatus)
 async def get_system_status():
     """Get status of all system components.
 
-    A component is reported running if EITHER a fresh DB heartbeat exists
-    (works across container boundaries — the prod/LXC case, #179) OR a local
-    process is found via pgrep/lsof (works in single-host dev). The OR means
-    neither deployment shape reports a false "down".
+    The API is running by definition — it is answering this request — so it is
+    always reported up (the in-container port probe is unreliable, see #304).
+    Worker/watcher are detected by a fresh DB heartbeat (works across container
+    boundaries, #179) OR a local process (single-host dev).
     """
-    # API check: port probe — the API answers its own request in-container.
+    # API answers its own request; the port probe is kept only as dev info.
     api_pid = _check_port_in_use(8000)
 
     # Worker/watcher: same-host process probe (dev) plus shared-DB heartbeat (prod).
@@ -121,106 +130,89 @@ async def get_system_status():
     watcher_running = watcher_pid is not None or database.heartbeat_is_fresh(watcher_age)
 
     return SystemStatus(
-        api=ComponentStatus(name="API Server", running=api_pid is not None, pid=api_pid),
-        worker=ComponentStatus(name="Worker", running=worker_running, pid=worker_pid, heartbeat_age_seconds=worker_age),
+        api=ComponentStatus(name="API Server", running=True, pid=api_pid, container="cardigan-api"),
+        worker=ComponentStatus(
+            name="Worker",
+            running=worker_running,
+            pid=worker_pid,
+            heartbeat_age_seconds=worker_age,
+            container="cardigan-worker",
+        ),
         watcher=ComponentStatus(
             name="Transcript Watcher",
             running=watcher_running,
             pid=watcher_pid,
             heartbeat_age_seconds=watcher_age,
+            container=None,
         ),
     )
 
 
-@router.post("/watcher/heartbeat", response_model=RestartResponse)
-async def watcher_heartbeat():
-    """Record a liveness heartbeat for the transcript watcher.
+@router.post("/watcher/heartbeat", response_model=WatcherHeartbeatResponse)
+async def watcher_heartbeat(body: Optional[WatcherHeartbeatRequest] = None):
+    """Record watcher liveness and tell it whether a restart was requested.
 
-    The watcher runs in its own container and reaches the API over HTTP (it has
-    no direct DB access), so it pings this endpoint each scan loop. /status reads
-    the resulting DB heartbeat to detect the watcher across container boundaries.
+    The watcher has no DB access; it reports its own boot time and the API
+    computes the restart flag so the watcher can self-exit (its supervisor
+    restarts it). Recording liveness is how /status detects it across
+    container boundaries (#179).
     """
     await database.record_heartbeat("watcher")
-    return RestartResponse(success=True, message="Watcher heartbeat recorded")
+
+    restart = False
+    if body is not None and body.started_at:
+        try:
+            started = datetime.fromisoformat(body.started_at)
+            restart = should_restart(started, await get_restart_requested_at())
+        except ValueError:
+            restart = False
+
+    return WatcherHeartbeatResponse(success=True, message="Watcher heartbeat recorded", restart=restart)
 
 
-@router.post("/worker/restart", response_model=RestartResponse)
-async def restart_worker():
-    """Restart the worker process."""
+async def _self_restart(delay: float = 1.0) -> None:
+    """Terminate this API process after the response has flushed.
 
-    # Kill existing worker
-    _kill_process("run_worker.py")
-
-    # Start new worker
-    success = _start_component("./venv/bin/python run_worker.py", "worker.log")
-
-    if success:
-        return RestartResponse(success=True, message="Worker restarted successfully")
-    else:
-        raise HTTPException(status_code=500, detail="Failed to restart worker")
+    uvicorn handles SIGTERM as a graceful shutdown; ``restart: unless-stopped``
+    brings the container back. The delay lets the HTTP response reach the client.
+    """
+    await asyncio.sleep(delay)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
-@router.post("/watcher/restart", response_model=RestartResponse)
-async def restart_watcher():
-    """Restart the transcript watcher."""
+@router.post("/restart", response_model=RestartRequestResponse)
+async def restart_components(background_tasks: BackgroundTasks):
+    """Request a restart of all running components.
 
-    # Kill existing watcher
-    _kill_process("watch_transcripts.py")
+    Writes one timestamp; the worker (and dev watcher) self-restart on their
+    next loop, and this API process schedules its own SIGTERM after responding.
+    """
+    requested_at = await request_restart()
 
-    # Start new watcher
-    success = _start_component("./venv/bin/python watch_transcripts.py", "watcher.log")
+    components = ["api"]
+    worker_age = await database.get_heartbeat_age_seconds("worker")
+    if database.heartbeat_is_fresh(worker_age):
+        components.append("worker")
+    watcher_age = await database.get_heartbeat_age_seconds("watcher")
+    if database.heartbeat_is_fresh(watcher_age):
+        components.append("watcher")
 
-    if success:
-        return RestartResponse(success=True, message="Watcher restarted successfully")
-    else:
-        raise HTTPException(status_code=500, detail="Failed to restart watcher")
+    # Trace the cycle. This endpoint replaces machinery that claimed success
+    # while doing nothing (#304), so the request itself must leave a record --
+    # otherwise "did the restart actually happen?" is unanswerable after the
+    # fact, which is the same blind spot in a different place.
+    logger.info(
+        "Restart requested via Settings",
+        extra={
+            "event": "restart_requested",
+            "requested_at": requested_at,
+            "components": components,
+        },
+    )
 
-
-@router.post("/worker/stop", response_model=RestartResponse)
-async def stop_worker():
-    """Stop the worker process."""
-
-    if _kill_process("run_worker.py"):
-        return RestartResponse(success=True, message="Worker stopped")
-    else:
-        return RestartResponse(success=False, message="Worker was not running")
-
-
-@router.post("/watcher/stop", response_model=RestartResponse)
-async def stop_watcher():
-    """Stop the transcript watcher."""
-
-    if _kill_process("watch_transcripts.py"):
-        return RestartResponse(success=True, message="Watcher stopped")
-    else:
-        return RestartResponse(success=False, message="Watcher was not running")
-
-
-@router.post("/worker/start", response_model=RestartResponse)
-async def start_worker():
-    """Start the worker process if not running."""
-
-    if _find_process("run_worker.py"):
-        return RestartResponse(success=False, message="Worker is already running")
-
-    success = _start_component("./venv/bin/python run_worker.py", "worker.log")
-
-    if success:
-        return RestartResponse(success=True, message="Worker started")
-    else:
-        raise HTTPException(status_code=500, detail="Failed to start worker")
-
-
-@router.post("/watcher/start", response_model=RestartResponse)
-async def start_watcher():
-    """Start the transcript watcher if not running."""
-
-    if _find_process("watch_transcripts.py"):
-        return RestartResponse(success=False, message="Watcher is already running")
-
-    success = _start_component("./venv/bin/python watch_transcripts.py", "watcher.log")
-
-    if success:
-        return RestartResponse(success=True, message="Watcher started")
-    else:
-        raise HTTPException(status_code=500, detail="Failed to start watcher")
+    background_tasks.add_task(_self_restart)
+    return RestartRequestResponse(
+        requested_at=requested_at,
+        components=components,
+        message="Restart requested; components will cycle shortly.",
+    )

@@ -44,6 +44,7 @@ from api.services.llm import (
     start_run_tracking,
 )
 from api.services.logging import get_logger, setup_logging
+from api.services.restart_signal import get_restart_requested_at, should_restart
 from api.services.style_engine import (
     PostStageResult,
     PromptBlockError,
@@ -64,6 +65,10 @@ TRANSCRIPTS_ARCHIVE_DIR = TRANSCRIPTS_DIR / "archive"
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "media"))
 AGENTS_DIR = Path("prompts")
 KNOWLEDGE_DIR = Path(os.getenv("KNOWLEDGE_DIR", "knowledge"))
+
+# How long to let in-flight jobs drain on a restart before force-exiting.
+# A wedged job is reclaimed afterward by database.reset_stale_jobs().
+RESTART_DRAIN_TIMEOUT_SECONDS = 60
 
 
 def _extract_speakers_from_sst(sst_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -230,6 +235,7 @@ class JobWorker:
         self.running = False
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._current_job_id: Optional[int] = None
+        self._start_time = datetime.now(timezone.utc)
 
     async def start(self):
         """Start the worker polling loop with concurrent job processing."""
@@ -269,6 +275,16 @@ class JobWorker:
                         "Heartbeat/status publish failed",
                         extra={"worker_id": worker_id, "error": str(hb_error)},
                     )
+
+                # Exit for a Settings-requested restart; the supervisor/Docker
+                # restart policy brings us back with the fresh config.
+                if await self._should_stop_for_restart():
+                    logger.info(
+                        "Restart requested via Settings; draining in-flight jobs and exiting",
+                        extra={"worker_id": worker_id},
+                    )
+                    self.running = False
+                    continue
 
                 # Clean up completed tasks
                 done_tasks = {t for t in active_tasks if t.done()}
@@ -340,13 +356,35 @@ class JobWorker:
                 )
                 await asyncio.sleep(self.config.poll_interval)
 
-        # Wait for active tasks on shutdown
+        # Wait for active tasks on shutdown, bounded so a wedged job can't block restart.
         if active_tasks:
             logger.info(
                 "Waiting for active jobs to complete on shutdown",
                 extra={"worker_id": worker_id, "active_jobs": len(active_tasks)},
             )
-            await asyncio.gather(*active_tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*active_tasks, return_exceptions=True),
+                    timeout=RESTART_DRAIN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # Name the jobs, not just the count -- the whole point of the
+                # bounded drain is that the reclaim by reset_stale_jobs isn't
+                # silent about which work was abandoned mid-flight.
+                abandoned = sorted(
+                    job_id for task, job_id in task_to_job_id.items() if not task.done() and job_id is not None
+                )
+                logger.warning(
+                    "Drain timeout after %ss; abandoning %d in-flight job(s) %s for reclaim by reset_stale_jobs",
+                    RESTART_DRAIN_TIMEOUT_SECONDS,
+                    len(abandoned),
+                    abandoned,
+                    extra={"worker_id": worker_id, "abandoned_job_ids": abandoned},
+                )
+
+    async def _should_stop_for_restart(self) -> bool:
+        """True if a Settings 'Restart Components' request postdates this worker's start."""
+        return should_restart(self._start_time, await get_restart_requested_at())
 
     async def stop(self):
         """Stop the worker."""

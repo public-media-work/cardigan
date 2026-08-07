@@ -10,6 +10,7 @@ Options:
 
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -17,6 +18,7 @@ import httpx
 TRANSCRIPTS_DIR = Path("transcripts")
 API_BASE = "http://localhost:8100"
 POLL_INTERVAL = 5  # seconds
+START_TIME = datetime.now(timezone.utc)  # this process's boot time (for restart signalling)
 
 
 def get_queued_files() -> set:
@@ -37,17 +39,25 @@ def get_queued_files() -> set:
     return queued
 
 
-def send_heartbeat() -> None:
-    """Ping the API so it can record watcher liveness in the shared DB.
+def send_heartbeat() -> bool:
+    """Ping the API for liveness; return True if a restart was requested.
 
-    The watcher has no direct DB access (it talks to the API over HTTP), so this
-    is how /api/system/status detects it across container boundaries (#179).
-    Best-effort: a failed ping must never interrupt the watch loop.
+    The watcher has no direct DB access (it talks to the API over HTTP), so it
+    reports its own boot time and the API returns whether a Settings restart
+    request postdates it (#179, #304). Best-effort: any failure returns False
+    and never interrupts the watch loop.
     """
     try:
-        httpx.post(f"{API_BASE}/api/system/watcher/heartbeat", timeout=5)
+        resp = httpx.post(
+            f"{API_BASE}/api/system/watcher/heartbeat",
+            json={"started_at": START_TIME.isoformat()},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            return bool(resp.json().get("restart", False))
     except Exception:
         pass
+    return False
 
 
 def get_transcript_files() -> list:
@@ -141,7 +151,10 @@ def watch_loop():
         seen_files = get_queued_files() | set(get_transcript_files())
 
         while True:
-            send_heartbeat()
+            if send_heartbeat():
+                print("[Watch] Restart requested via Settings; exiting for supervisor restart.")
+                return
+
             current_files = set(get_transcript_files())
             new_files = current_files - seen_files
 
