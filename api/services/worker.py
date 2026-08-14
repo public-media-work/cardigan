@@ -1360,6 +1360,19 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # starts a fresh capacity-wait ceiling rather than inheriting this one.
                 await clear_defer_state(job_id)
 
+                # Extract the editor-facing items (#329). Non-fatal: a job that
+                # produced good output must not be marked failed because the
+                # item extraction or the Airtable lookup had a bad day.
+                try:
+                    from api.services.item_sync import refresh_job_items
+
+                    await refresh_job_items(job_id)
+                except Exception as item_err:
+                    logger.warning(
+                        "Failed to extract job items (non-fatal)",
+                        extra={"job_id": job_id, "error": str(item_err)},
+                    )
+
                 # Archive the transcript file (non-fatal if this fails). Only on
                 # completion — a paused job may be reviewed/retried and still needs
                 # its source transcript, so we must NOT move it away on pause.

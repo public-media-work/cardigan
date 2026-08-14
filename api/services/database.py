@@ -22,6 +22,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     Text,
+    UniqueConstraint,
     and_,
     delete,
     desc,
@@ -74,6 +75,7 @@ def get_app_version() -> str:
 
 from api.models.config import ConfigItem, ConfigValueType
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
+from api.models.item import Item, ItemFlag, ItemStatus, ItemUpdate
 from api.models.job import Job, JobCreate, JobOutputs, JobPhase, JobStatus, JobUpdate, PhaseStatus
 
 
@@ -203,6 +205,37 @@ screengrab_attachments_table = Table(
     Column("attachments_after", Integer, nullable=True),
     Column("success", Boolean, server_default="1"),
     Column("error_message", Text, nullable=True),
+)
+
+# Define job_items table (migration 023) — the editor-facing primitive (#329).
+# Items are authoritative once extracted; the *_output.md phase documents stay
+# on disk as frozen provenance and are never rewritten by an edit or approval.
+job_items_table = Table(
+    "job_items",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False),
+    Column("key", Text, nullable=False),
+    Column("layer", Text, nullable=False),  # context | deliverable
+    Column("category", Text, nullable=False),  # context | metadata | copy | transcript
+    Column("source", Text, nullable=False),  # llm | deterministic | human
+    Column("proposed_value", Text, nullable=True),
+    Column("current_value", Text, nullable=True),
+    Column("current_state", Text, nullable=False, server_default="unknown"),
+    Column("current_fetched_at", DateTime, nullable=True),
+    Column("status", Text, nullable=False, server_default="pending_review"),
+    Column("source_blocked_on", Text, nullable=True),
+    Column("flags", Text, nullable=True),  # JSON array of ItemFlag
+    Column("kickback_note", Text, nullable=True),
+    Column("kicked_back_at", DateTime, nullable=True),
+    Column("phase", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("char_limit", Integer, nullable=True),
+    Column("airtable_field", Text, nullable=True),
+    Column("airtable_field_id", Text, nullable=True),
+    Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    UniqueConstraint("job_id", "key", name="uq_job_items_job_key"),
 )
 
 
@@ -1489,6 +1522,192 @@ async def list_config() -> List[ConfigItem]:
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+
+# ============================================================================
+# Job Items (#329)
+# ============================================================================
+
+
+async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
+    """Insert or update a job's items, keyed on (job_id, key).
+
+    Regeneration updates in place — there is no per-item version history by
+    design. Airtable's own revision tracking covers published values, and
+    worker.py archives superseded phase output as
+    ``{phase}_output.{timestamp}.prev.md``, so earlier proposals survive on
+    disk.
+
+    Editor-owned columns are preserved across re-extraction: an item the
+    editor already approved or kicked back keeps its ``status``,
+    ``kickback_note`` and ``kicked_back_at`` rather than being reset by a
+    later phase run. Callers that want a reset should clear those fields
+    explicitly.
+
+    Returns the number of rows written.
+    """
+    if not rows:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    written = 0
+
+    async with get_session() as session:
+        existing_result = await session.execute(
+            select(job_items_table.c.key, job_items_table.c.status).where(job_items_table.c.job_id == job_id)
+        )
+        existing = {row.key: row.status for row in existing_result.fetchall()}
+
+        for row in rows:
+            payload = dict(row)
+            payload["job_id"] = job_id
+            payload["updated_at"] = now
+
+            flags = payload.get("flags")
+            if isinstance(flags, list):
+                payload["flags"] = json.dumps(flags)
+
+            key = payload["key"]
+            if key in existing:
+                # Never clobber a verdict the editor already gave.
+                if existing[key] in (ItemStatus.approved.value, ItemStatus.kicked_back.value):
+                    payload.pop("status", None)
+                stmt = (
+                    update(job_items_table)
+                    .where(
+                        and_(
+                            job_items_table.c.job_id == job_id,
+                            job_items_table.c.key == key,
+                        )
+                    )
+                    .values(**payload)
+                )
+            else:
+                payload["created_at"] = now
+                stmt = job_items_table.insert().values(**payload)
+
+            await session.execute(stmt)
+            written += 1
+
+    return written
+
+
+async def get_job_items(job_id: int, include_values: bool = True) -> List[Item]:
+    """Return a job's items in registry order.
+
+    When ``include_values`` is False, values longer than
+    ``items.LARGE_VALUE_CHARS`` are replaced with None — the transcript item
+    alone is routinely 50-150KB and would dominate a list response.
+    """
+    from api.services.items import LARGE_VALUE_CHARS, SPECS_BY_KEY
+
+    async with get_session() as session:
+        stmt = select(job_items_table).where(job_items_table.c.job_id == job_id)
+        result = await session.execute(stmt)
+        rows = result.fetchall()
+
+    order = list(SPECS_BY_KEY)
+    items = [_row_to_item(row, include_values=include_values, large=LARGE_VALUE_CHARS) for row in rows]
+    items.sort(key=lambda item: order.index(item.key) if item.key in order else len(order))
+    return items
+
+
+async def get_job_item(job_id: int, key: str) -> Optional[Item]:
+    """Return one item by its key, or None."""
+    async with get_session() as session:
+        stmt = select(job_items_table).where(and_(job_items_table.c.job_id == job_id, job_items_table.c.key == key))
+        result = await session.execute(stmt)
+        row = result.fetchone()
+
+    return _row_to_item(row) if row else None
+
+
+async def update_job_item(job_id: int, key: str, item_update: ItemUpdate) -> Optional[Item]:
+    """Apply an editor action to one item.
+
+    An in-place value edit re-sources the item to ``human``. Setting
+    ``kicked_back`` stamps ``kicked_back_at``; regeneration is a separate
+    action that re-runs each affected phase once with all of its notes.
+    """
+    values: dict = {}
+
+    if item_update.status is not None:
+        values["status"] = item_update.status.value
+        if item_update.status == ItemStatus.kicked_back:
+            values["kicked_back_at"] = datetime.now(timezone.utc)
+
+    if item_update.proposed_value is not None:
+        values["proposed_value"] = item_update.proposed_value
+        values["source"] = "human"
+
+    if item_update.kickback_note is not None:
+        values["kickback_note"] = item_update.kickback_note
+
+    if not values:
+        return await get_job_item(job_id, key)
+
+    values["updated_at"] = datetime.now(timezone.utc)
+
+    async with get_session() as session:
+        stmt = (
+            update(job_items_table)
+            .where(and_(job_items_table.c.job_id == job_id, job_items_table.c.key == key))
+            .values(**values)
+        )
+        result = await session.execute(stmt)
+        if result.rowcount == 0:
+            return None
+
+    return await get_job_item(job_id, key)
+
+
+async def delete_job_items(job_id: int) -> int:
+    """Delete every item for a job. Returns the count removed."""
+    async with get_session() as session:
+        stmt = delete(job_items_table).where(job_items_table.c.job_id == job_id)
+        result = await session.execute(stmt)
+        return result.rowcount or 0
+
+
+def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
+    """Convert a database row to an Item model."""
+    flags: List[ItemFlag] = []
+    if row.flags:
+        try:
+            flags = [ItemFlag(**flag) for flag in json.loads(row.flags)]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # A malformed flags blob must not make the item unreadable —
+            # flags are advisory and never gate anything.
+            flags = []
+
+    proposed = row.proposed_value
+    if not include_values and proposed is not None and len(proposed) > large:
+        proposed = None
+
+    return Item(
+        id=row.id,
+        job_id=row.job_id,
+        key=row.key,
+        layer=row.layer,
+        category=row.category,
+        source=row.source,
+        proposed_value=proposed,
+        current_value=row.current_value,
+        current_state=row.current_state,
+        current_fetched_at=row.current_fetched_at,
+        status=row.status,
+        source_blocked_on=row.source_blocked_on,
+        flags=flags,
+        kickback_note=row.kickback_note,
+        kicked_back_at=row.kicked_back_at,
+        phase=row.phase,
+        model=row.model,
+        char_limit=row.char_limit,
+        airtable_field=row.airtable_field,
+        airtable_field_id=row.airtable_field_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
 def _row_to_job(row) -> Job:

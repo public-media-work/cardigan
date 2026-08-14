@@ -15,13 +15,17 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
+from api.models.item import Item, ItemCategory, ItemList, ItemStatus, ItemUpdate
 from api.models.job import Job, JobStatus, JobUpdate, PhaseStatus
 from api.services.airtable import AirtableClient
 from api.services.database import (
     get_events_for_job,
     get_job,
+    get_job_item,
+    get_job_items,
     log_event,
     update_job,
+    update_job_item,
 )
 
 logger = logging.getLogger(__name__)
@@ -890,3 +894,89 @@ async def retry_phase(
         phase=phase_name,
         message=f"Phase '{phase_name}' retry started for job {job_id}. Refresh to see results.",
     )
+
+
+# ============================================================================
+# Items (#329)
+# ============================================================================
+
+
+@router.get("/{job_id}/items", response_model=ItemList)
+async def list_job_items(
+    job_id: int,
+    include: Optional[str] = Query(
+        None,
+        description="Pass 'values' to hydrate large values (the formatted transcript is 50-150KB)",
+    ),
+    category: Optional[ItemCategory] = Query(None, description="Filter to one category"),
+    status: Optional[ItemStatus] = Query(None, description="Filter to one review status"),
+):
+    """List a job's items — the editor-facing view of its output.
+
+    Items replace the agent-shaped ``*_output.md`` documents as the unit an
+    editor reviews. Each carries a proposed value, the current Airtable value
+    it would replace, and a status.
+
+    Large values are omitted by default; pass ``?include=values`` to hydrate
+    them. Nothing in this response blocks: flags are advisory, and an item
+    carrying errors is still approvable.
+    """
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    include_values = include == "values"
+    items = await get_job_items(job_id, include_values=include_values)
+
+    if category is not None:
+        items = [item for item in items if item.category == category]
+    if status is not None:
+        items = [item for item in items if item.status == status]
+
+    by_status: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    for item in items:
+        by_status[item.status.value] = by_status.get(item.status.value, 0) + 1
+        by_category[item.category.value] = by_category.get(item.category.value, 0) + 1
+
+    return ItemList(
+        items=items,
+        total=len(items),
+        job_id=job_id,
+        values_included=include_values,
+        summary={
+            "by_status": by_status,
+            "by_category": by_category,
+            "needs_confirmation": sum(1 for item in items if item.needs_overwrite_confirmation()),
+            "flagged": sum(1 for item in items if item.has_errors()),
+        },
+    )
+
+
+@router.get("/{job_id}/items/{key}", response_model=Item)
+async def get_single_job_item(job_id: int, key: str):
+    """Retrieve one item by key, always with its full value."""
+    item = await get_job_item(job_id, key)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Item '{key}' not found on job {job_id}")
+    return item
+
+
+@router.patch("/{job_id}/items/{key}", response_model=Item)
+async def patch_job_item(job_id: int, key: str, body: ItemUpdate):
+    """Apply an editor action to one item: approve, kick back, or edit in place.
+
+    An in-place value edit re-sources the item to ``human``. A kickback records
+    the note and stamps the time but does not regenerate anything — that is a
+    separate action which re-runs each affected phase once, carrying all of
+    that phase's notes.
+    """
+    item = await update_job_item(job_id, key, body)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Item '{key}' not found on job {job_id}")
+
+    logger.info(
+        "Item updated",
+        extra={"job_id": job_id, "item_key": key, "status": item.status.value, "source": item.source.value},
+    )
+    return item
