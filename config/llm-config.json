@@ -173,6 +173,10 @@
         "timestamp": {"pre": true, "post": "off"}
       },
       "qa_gate": {"merge_flags": true, "fail_on_error": true}
+    },
+    "items": {
+      "enabled": false,
+      "_comment": "Editor-facing item extraction (#329). OFF in prod until the approval surface exists. When on, a completed job extracts its outputs into job_items and looks up its SST record — that Airtable call per completed job is the only prod-visible side effect. Flip to true on the dev instance."
     }
   },
   "model_families": [
