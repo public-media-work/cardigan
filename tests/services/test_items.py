@@ -362,3 +362,16 @@ class TestBuildItems:
 
         assert all(row["status"] != "blocked" for row in rows)
         assert all(row["status"] != "paused" for row in rows)
+
+
+class TestShippedConfigGate:
+    def test_item_extraction_is_off_by_default(self):
+        """The worker's item hook performs an Airtable lookup per completed
+        job. It must stay inert in the shipped config until the approval
+        surface exists; the dev instance flips it on locally."""
+        import json
+        from pathlib import Path
+
+        config = json.loads(Path("config/llm-config.json").read_text())
+
+        assert config["routing"]["items"]["enabled"] is False
