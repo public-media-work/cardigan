@@ -65,4 +65,5 @@ api/_version.py
 # Local dev runtime state written by the dashboard and job runner:
 # dashboard.db, jobs.json, llm-config.json, and per-media-ID output/.
 # Per-machine and regenerable; never shared.
+# Also holds the seed_dev_db.py instance data (prod job export + OUTPUT copy).
 .devdata/
