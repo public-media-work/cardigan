@@ -1,9 +1,9 @@
-fastapi==0.136.3
-uvicorn[standard]==0.49.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
 python-multipart==0.0.32
 # Pinned: /transcribe swaps dataclasses.replace(_model.options,
 # initial_prompt=...) per request and imports whisperx.diarize.
 # DiarizationPipeline directly — verify both survive before bumping.
 whisperx==3.8.6
-torch==2.12.0
+torch==2.13.0
 torchaudio==2.11.0
