@@ -50,6 +50,10 @@ MALFORMED_BODY_BACKOFF_S = (1.0, 3.0)
 # multi-megabyte body cannot flood the logs.
 MALFORMED_BODY_PREFIX_CHARS = 300
 
+# Default completion cap when neither the caller nor the backend config sets one.
+# Matches the OpenAI-compatible path's long-standing default.
+DEFAULT_MAX_TOKENS = 4096
+
 
 class CostCapExceededError(Exception):
     """Raised when a request would exceed the run cost cap."""
@@ -135,6 +139,22 @@ class CreditExhaustedError(Exception):
         super().__init__(detail)
         self.detail = detail
         self.backend = backend
+
+
+class OutputTruncatedError(Exception):
+    """The provider stopped generation early (``finish_reason == "length"``).
+
+    The completion is cut off mid-output but is otherwise a well-formed 200
+    response, so it would pass as a successful phase. Raising here fails the
+    phase loudly instead of handing a half-written transcript downstream,
+    where only the coverage ratio stood a chance of catching it (#403).
+    """
+
+    def __init__(self, detail: str, backend: Optional[str] = None, output_tokens: int = 0):
+        super().__init__(detail)
+        self.detail = detail
+        self.backend = backend
+        self.output_tokens = output_tokens
 
 
 def _parse_unavailable_503(response: "httpx.Response") -> tuple[str, Optional[int], bool]:
@@ -849,6 +869,10 @@ class LLMClient:
             "messages": messages,
             **kwargs,
         }
+        # Cap output explicitly. Without it OpenRouter applies its own
+        # undocumented completion cap, which silently truncated the formatter
+        # mid-transcript (#403). Precedence: explicit kwarg > backend config > 4096.
+        payload["max_tokens"] = payload.get("max_tokens") or config.get("max_tokens", DEFAULT_MAX_TOKENS)
 
         response = await self._post_openrouter(config["endpoint"], headers, payload)
 
@@ -892,6 +916,20 @@ class LLMClient:
             cost = 0.0
         else:
             cost = calculate_cost(actual_model, input_tokens, output_tokens, openrouter_cost)
+
+        # A length stop means the provider cut generation off mid-output. The body
+        # is a well-formed 200, so without this check it is recorded as a completed
+        # phase and only the downstream coverage ratio can catch it (#403).
+        choices = data.get("choices") or [{}]
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason == "length":
+            raise OutputTruncatedError(
+                f"Provider stopped generation early (finish_reason='length') after "
+                f"{output_tokens} output tokens on model={actual_model}. The output is "
+                f"truncated mid-generation; raise max_tokens or split the input.",
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+            )
 
         # Extract content
         content = data["choices"][0]["message"]["content"]
