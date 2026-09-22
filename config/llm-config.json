@@ -58,6 +58,7 @@
       "fallback_model": "anthropic/claude-sonnet-4.6",
       "api_key_env": "OPENROUTER_API_KEY",
       "timeout": 180,
+      "max_tokens": 16384,
       "cost_per_project": 0.02
     },
     "openrouter-big-brain": {
