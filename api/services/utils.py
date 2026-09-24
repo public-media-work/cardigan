@@ -236,7 +236,10 @@ def parse_iso_datetime(s: str) -> datetime:
 
 
 def calculate_transcript_metrics(
-    transcript_content: str, words_per_minute: int = 150, long_form_threshold_minutes: int = 15
+    transcript_content: str,
+    words_per_minute: int = 150,
+    long_form_threshold_minutes: int = 15,
+    is_srt: bool = False,
 ) -> dict:
     """Calculate metrics from transcript content for routing decisions.
 
@@ -244,6 +247,10 @@ def calculate_transcript_metrics(
         transcript_content: Raw transcript text
         words_per_minute: Speaking rate estimate (default 150 wpm)
         long_form_threshold_minutes: Minutes threshold for long-form classification
+        is_srt: Count spoken words only, skipping SRT index numbers and
+            timecodes. Without this a naive whitespace split counts ~4 markup
+            tokens per caption as speech, inflating word_count by the caption
+            count (job 48 reported 3750 against 2318 real words) (#404).
 
     Returns:
         Dict with word_count, estimated_duration_minutes, is_long_form
@@ -261,9 +268,15 @@ def calculate_transcript_metrics(
         >>> metrics["is_long_form"]  # 5000 words / 150 wpm = 33.33 min
         True
     """
-    # Count words (simple split on whitespace)
-    words = transcript_content.split()
-    word_count = len(words)
+    # Count words. SRT markup is not speech, so parse it out when we know the
+    # content is SRT; fall back to the whitespace split if parsing finds nothing.
+    word_count = 0
+    if is_srt:
+        captions = parse_srt(transcript_content)
+        if captions:
+            word_count = sum(len(c.text.split()) for c in captions)
+    if not word_count:
+        word_count = len(transcript_content.split())
 
     # Estimate duration based on speaking rate
     estimated_duration_minutes = round(word_count / words_per_minute, 2)

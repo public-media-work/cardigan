@@ -151,6 +151,8 @@
     },
     "chunking": {
       "enabled": true,
+      "tokens_per_word": 2.0,
+      "safety_factor": 0.8,
       "threshold_words": 3000,
       "target_chunk_words": 2000,
       "overlap_captions": 8,
