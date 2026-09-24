@@ -22,6 +22,12 @@ DEFAULT_CHUNKING_CONFIG = {
     "target_chunk_words": 1500,
     "overlap_captions": 5,
     "max_parallel": 3,
+    # Projected output tokens per source word. Measured 1.77 on lyric-dense
+    # content (job 48); rounded up because under-chunking truncates while
+    # over-chunking only costs a little latency.
+    "tokens_per_word": 2.0,
+    # Headroom for the metadata header, speaker labels, and ratio variance.
+    "safety_factor": 0.8,
 }
 
 
@@ -40,6 +46,25 @@ class TranscriptChunk:
 def _count_dialogue_words_srt(captions: List[SRTCaption]) -> int:
     """Count dialogue words across SRT captions (text only, no timecodes)."""
     return sum(len(c.text.split()) for c in captions)
+
+
+def output_word_budget(
+    max_output_tokens: int,
+    tokens_per_word: float = 2.0,
+    safety_factor: float = 0.8,
+) -> int:
+    """How many source words one call can format within its output cap.
+
+    Chunking exists to keep each call's OUTPUT inside the model's completion
+    limit, so the gate belongs in those units. A word-count threshold could not
+    express it: a sparse hour-long program fell under the threshold while a
+    dense short one sailed past, and neither fact said anything about whether
+    the output would fit (#404).
+
+    Deriving the budget from the cap makes the two move together — raise
+    ``max_tokens`` and chunking backs off; lower it and chunking engages.
+    """
+    return int(max_output_tokens / tokens_per_word * safety_factor)
 
 
 # How far past the word target to scan for a natural chunk boundary.
@@ -100,8 +125,10 @@ def _split_srt(
         return None
 
     total_words = _count_dialogue_words_srt(captions)
-    if total_words < target_chunk_words * 1.5:
-        # Would produce only 1 chunk
+    if total_words <= target_chunk_words:
+        # Fits in a single chunk. Previously ``< target * 1.5``, which skipped
+        # transcripts between 1x and 1.5x the target — genuinely oversized work
+        # that then went out as one call (#404).
         return None
 
     chunks: List[TranscriptChunk] = []
@@ -186,7 +213,8 @@ def _split_plain_text(
         return None
 
     total_words = sum(len(p.split()) for p in paragraphs)
-    if total_words < target_chunk_words * 1.5:
+    if total_words <= target_chunk_words:
+        # Fits in a single chunk (see the SRT splitter's note on the old 1.5x guard).
         return None
 
     chunks: List[TranscriptChunk] = []
@@ -253,16 +281,21 @@ def split_transcript(
     content: str,
     is_srt: bool,
     config: Optional[Dict] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> Optional[List[TranscriptChunk]]:
     """Split a transcript into chunks for parallel processing.
 
-    Returns None if the transcript is below threshold or only produces
-    one chunk — caller should use the normal single-call path.
+    Returns None if the transcript fits one call or only produces one chunk —
+    the caller then uses the normal single-call path.
 
     Args:
         content: Raw transcript content (SRT or plain text)
         is_srt: Whether the content is SRT format
         config: Chunking config from llm-config.json routing.chunking
+        max_output_tokens: The backend's completion cap. When given, the gate
+            and the chunk target both derive from it (see output_word_budget),
+            replacing the static word thresholds. When omitted, the legacy
+            ``threshold_words``/``target_chunk_words`` behavior applies.
 
     Returns:
         List of TranscriptChunk if chunking applies, None otherwise
@@ -279,15 +312,32 @@ def split_transcript(
     else:
         word_count = len(content.split())
 
-    threshold = cfg["threshold_words"]
-    if word_count < threshold:
-        logger.debug(
-            "Transcript below chunking threshold",
-            extra={"word_count": word_count, "threshold": threshold},
+    # Prefer the output-budget gate when the caller knows the cap; fall back to
+    # the static thresholds otherwise (#404).
+    if max_output_tokens:
+        threshold = output_word_budget(
+            max_output_tokens,
+            tokens_per_word=cfg.get("tokens_per_word", 2.0),
+            safety_factor=cfg.get("safety_factor", 0.8),
+        )
+        target = threshold
+    else:
+        threshold = cfg["threshold_words"]
+        target = cfg["target_chunk_words"]
+
+    if word_count <= threshold:
+        # Logged at info: prod previously had no record of WHY chunking was
+        # skipped, which is what let #404 hide.
+        logger.info(
+            "Transcript fits a single call — not chunking",
+            extra={
+                "word_count": word_count,
+                "budget_words": threshold,
+                "max_output_tokens": max_output_tokens,
+            },
         )
         return None
 
-    target = cfg["target_chunk_words"]
     overlap = cfg.get("overlap_captions", 5)
 
     if is_srt:
