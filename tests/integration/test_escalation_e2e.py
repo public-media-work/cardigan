@@ -100,6 +100,11 @@ def _make_handler(state: _MockState):
                 content = json.dumps({"overall": overall, "phase_results": phase_results})
             else:
                 content = "Mock phase output. The meeting covered budget and policy in full."
+                # The nonfixable scenario must be non-fixable on the EVIDENCE, not on
+                # the validator's wording: since QA-1, routing reads the artifact for
+                # contract markers rather than substring-matching flag prose.
+                if state.scenario == "nonfixable":
+                    content += "\n\n<!-- REVIEW NOTES:\n- verify proper-noun spelling\n-->\n"
 
             resp = {
                 "model": req.get("model") or "anthropic/claude-haiku-4.5-20251001",
