@@ -1159,3 +1159,61 @@ class TestWorkerRestartSignal:
             return_value=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ):
             assert await worker._should_stop_for_restart() is False
+
+
+class TestChunkWrapperInstructions:
+    """FMT-1: the chunked formatter produced a document with no header and no
+    Status footer, and every deterministic gate passed it.
+
+    Chunk 0's prompt said "Format only the dialogue in this section", which
+    contradicts the system prompt's mandatory header — Sonnet dropped the
+    header. No chunk was ever told to emit the Status footer, and
+    merge_formatter_chunks only keeps a Status line if the last chunk wrote one.
+    """
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_first_chunk_is_told_to_write_the_header(self):
+        out = self._worker()._chunk_wrapper_instructions(0, 3).lower()
+        assert "header" in out
+        assert "do not" not in out.split("header")[0][-40:], "chunk 0 must be told to WRITE the header"
+
+    def test_last_chunk_is_told_to_write_the_status_footer(self):
+        out = self._worker()._chunk_wrapper_instructions(2, 3).lower()
+        assert "status" in out
+
+    def test_middle_chunk_writes_neither_wrapper(self):
+        out = self._worker()._chunk_wrapper_instructions(1, 3).lower()
+        assert "write the metadata header" not in out
+        assert "status footer" not in out
+
+    def test_single_chunk_writes_both(self):
+        """A one-chunk run is both first and last."""
+        out = self._worker()._chunk_wrapper_instructions(0, 1).lower()
+        assert "header" in out and "status" in out
+
+
+class TestRetryContextSection:
+    """RETRY-1: the chunked formatter path never read _validation_flags,
+    _previous_output or _editorial_feedback, so every retry or escalation of a
+    chunked job was a blind re-run of the identical prompt — the operator's
+    typed feedback was silently discarded."""
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_includes_editorial_feedback(self):
+        out = self._worker()._retry_context_section({"_editorial_feedback": "merge the first two chapters"})
+        assert "merge the first two chapters" in out
+
+    def test_includes_validation_flags(self):
+        out = self._worker()._retry_context_section({"_validation_flags": ["speaker mislabeled at 4:10"]})
+        assert "speaker mislabeled at 4:10" in out
+
+    def test_empty_without_retry_context(self):
+        assert self._worker()._retry_context_section({}) == ""

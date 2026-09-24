@@ -1418,6 +1418,59 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 self._heartbeat_task = None
             self._current_job_id = None
 
+    def _chunk_wrapper_instructions(self, chunk_index: int, total_chunks: int) -> str:
+        """Header/footer duties for one chunk of a chunked formatter run (FMT-1).
+
+        The document wrapper is written by exactly one chunk at each end, and
+        every chunk has to be told which. Chunk 0's prompt previously said
+        "Format only the dialogue in this section", contradicting the system
+        prompt's mandatory header, so the header was dropped; and no chunk was
+        ever told to emit the Status footer. ``merge_formatter_chunks`` keeps a
+        Status line only if the last chunk wrote one, so the merged document
+        came out with neither -- and passed every deterministic gate.
+        """
+        parts = []
+        if chunk_index == 0:
+            parts.append(
+                "WRAPPER: Write the metadata header block (# Formatted Transcript, "
+                "Project, Program, Duration, Date Processed) exactly as the system "
+                "prompt specifies, THEN format this section's dialogue. The header "
+                "is required even though this is only part of the transcript."
+            )
+        if chunk_index == total_chunks - 1:
+            parts.append(
+                "WRAPPER: This is the FINAL section. After the last line of dialogue, "
+                "end the document with the Status footer the system prompt specifies."
+            )
+        return ("\n\n".join(parts) + "\n\n") if parts else ""
+
+    def _retry_context_section(self, context: Dict[str, Any]) -> str:
+        """Validator flags and editorial feedback to carry into a re-run (RETRY-1).
+
+        The chunked formatter built its own prompt and never read these, so a
+        retry or escalation of a chunked job re-sent the identical prompt to
+        another model and the operator's typed feedback was silently dropped.
+        On main, any episode over ~3,000 dialogue words chunks.
+
+        ``_previous_output`` is deliberately NOT included: it is the whole
+        previous document, and repeating it on every chunk would multiply the
+        input by the chunk count. The flags and the feedback are what a re-run
+        has to act on; each chunk already carries its own source text.
+        """
+        out = ""
+        flags = context.get("_validation_flags")
+        if flags:
+            out += "\n\n## Validation Issues from Previous Attempt\n\n"
+            out += "The previous output was flagged for these issues. Address each one:\n\n"
+            for flag in flags:
+                out += f"- {flag}\n"
+        feedback = context.get("_editorial_feedback")
+        if feedback:
+            out += "\n\n## Editorial Feedback\n\n"
+            out += "An editor reviewed the previous output and asked for these changes:\n\n"
+            out += f"{feedback}\n"
+        return out
+
     def _phase_model(self, job, phase_name: str) -> Optional[str]:
         """Return the model the named phase actually ran on, from the job's
         persisted phases. Handles both JobPhase objects and dict entries.
@@ -2796,7 +2849,7 @@ SPELLING: Always use "partisan" (not "partizan"), "bipartisan" (not "bipartisan"
                             "transcript. Your section legitimately ends partway through — do NOT "
                             "assess overall transcript completeness, do NOT claim the transcript "
                             "is truncated, incomplete, or cut off, and do NOT set a 'needs_review' "
-                            "status on that basis. Format only the dialogue in this section.\n\n"
+                            "status on that basis.\n\n"
                         )
                     user_message += "Using the following analysis as guidance:\n\n"
                     if sst_section:
@@ -2841,6 +2894,13 @@ Please format this transcript section:
                 style_section = style_pre.get("prompt_section")
                 if style_section:
                     user_message = f"{user_message}\n\n{style_section}"
+
+                # Say which end of the document this chunk owns (FMT-1) and carry
+                # any retry/editorial context the operator supplied (RETRY-1).
+                wrapper = self._chunk_wrapper_instructions(chunk.index, total_chunks)
+                if wrapper:
+                    user_message = f"{wrapper}{user_message}"
+                user_message += self._retry_context_section(context)
 
                 messages = [
                     {"role": "system", "content": system_prompt},
