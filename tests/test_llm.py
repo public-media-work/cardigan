@@ -189,3 +189,112 @@ async def test_call_openrouter_returns_normally_on_stop(monkeypatch):
     )
 
     assert result.content == "a complete answer"
+
+
+class FakeRespReasoning:
+    """OpenRouter body carrying reasoning-token accounting.
+
+    Modern Anthropic models reason by default and those tokens are drawn from
+    max_tokens, so a large completion can contain little visible output (#403).
+    """
+
+    status_code = 200
+
+    def __init__(self, content="hi", finish_reason="stop", reasoning_tokens=12575, completion_tokens=16384):
+        self._content = content
+        self._finish_reason = finish_reason
+        self._reasoning_tokens = reasoning_tokens
+        self._completion_tokens = completion_tokens
+        self.text = "{}"
+
+    def json(self):
+        return {
+            "model": "anthropic/claude-sonnet-5",
+            "usage": {
+                "prompt_tokens": 32816,
+                "completion_tokens": self._completion_tokens,
+                "total_tokens": 32816 + self._completion_tokens,
+                "completion_tokens_details": {"reasoning_tokens": self._reasoning_tokens},
+            },
+            "choices": [{"message": {"content": self._content}, "finish_reason": self._finish_reason}],
+        }
+
+    def raise_for_status(self):
+        return None
+
+
+async def test_call_openrouter_forwards_reasoning_control(monkeypatch):
+    """A caller's reasoning setting must reach the OpenRouter payload (#403).
+
+    Disabling reasoning is the difference between a truncated formatter run and
+    a clean one on reasoning-by-default models.
+    """
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    captured = {}
+
+    async def _post(endpoint, headers, payload):
+        captured["payload"] = payload
+        return FakeRespReasoning(reasoning_tokens=0, completion_tokens=100)
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+        reasoning={"enabled": False},
+    )
+
+    assert captured["payload"].get("reasoning") == {"enabled": False}
+
+
+async def test_call_openrouter_captures_reasoning_tokens(monkeypatch):
+    """reasoning_tokens must be recorded, not silently folded into output_tokens (#403).
+
+    Without this the budget-eater is invisible: completion_tokens looks healthy
+    while almost none of it is visible output.
+    """
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    async def _post(endpoint, headers, payload):
+        return FakeRespReasoning(reasoning_tokens=12575, completion_tokens=16384)
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    result = await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+    )
+
+    assert result.reasoning_tokens == 12575
+
+
+async def test_call_openrouter_raises_on_null_content(monkeypatch):
+    """A 200 whose content is null is a failure, not an empty phase (#403).
+
+    Observed live: the whole completion went to reasoning and content came back
+    null. Returning that as success would write an empty transcript.
+    """
+    from api.services.llm import MalformedResponseError
+
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    async def _post(endpoint, headers, payload):
+        return FakeRespReasoning(content=None, finish_reason="stop")
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    with pytest.raises(MalformedResponseError):
+        await client._call_openrouter(
+            config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+            model="anthropic/claude-sonnet-5",
+            messages=[{"role": "user", "content": "hi"}],
+            api_key="fake-key",
+        )

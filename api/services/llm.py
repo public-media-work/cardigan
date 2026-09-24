@@ -246,6 +246,10 @@ class LLMResponse:
     duration_ms: int
     backend: str
     raw_response: Optional[Dict[str, Any]] = None
+    # Tokens spent on model reasoning. Drawn from the same max_tokens budget as
+    # visible output on reasoning-by-default models, so a healthy-looking
+    # completion count can contain almost no transcript (#403).
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -904,6 +908,7 @@ class LLMClient:
         input_tokens = usage.get("prompt_tokens", 0)
         output_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+        reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
 
         # OpenRouter may report cost directly
         openrouter_cost = None
@@ -931,9 +936,19 @@ class LLMClient:
                 output_tokens=output_tokens,
             )
 
-        # Extract content
-        content = data["choices"][0]["message"]["content"]
-        actual_model = data.get("model", model)
+        # Extract content. A 200 can still carry null content when the whole
+        # completion went to reasoning — treat that as a failure rather than
+        # writing an empty phase output (#403).
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+        if content is None:
+            raise MalformedResponseError(
+                f"{self.active_backend or 'openrouter'} returned HTTP 200 with null content "
+                f"(model={actual_model}, finish_reason={finish_reason!r}, "
+                f"{output_tokens} completion tokens of which {reasoning_tokens} were reasoning). "
+                f"Nothing was generated; disable reasoning or raise max_tokens.",
+                backend=self.active_backend,
+                body_length=0,
+            )
 
         return LLMResponse(
             content=content,
@@ -945,6 +960,7 @@ class LLMClient:
             duration_ms=0,  # Set by caller
             backend="openrouter",
             raw_response=data,
+            reasoning_tokens=reasoning_tokens,
         )
 
     async def _call_openai(
