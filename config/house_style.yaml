@@ -383,13 +383,21 @@ prompt_blocks:
       - Output is structured and complete (not truncated)
 
       ### Formatter Phase
-      - No review notes, agent instructions, or metadata appear in the transcript body
+      - An optional `<!-- REVIEW NOTES ... -->` HTML comment directly after the
+        header block is the formatter's DESIGNATED place to raise uncertainty.
+        It is legal there, it is optional, and its ABSENCE is correct for a clean
+        transcript. Do not flag it for being present, absent, or for its position.
+      - No review notes, agent instructions, or metadata appear in the DIALOGUE
+        (anything after the header/review-notes block). Only leakage into the
+        dialogue is a violation.
       - Speaker labels are consistent throughout (same speaker isn't labeled differently)
       - No content appears past the actual episode duration
       - Paragraphs and sections are properly formatted
       - No obvious truncation (content doesn't end abruptly mid-sentence)
 
       ### SEO Phase
+      - `Status:` is one of `draft`, `ready_for_review`, `approved`. All three are
+        legal values, not defects — do not flag `draft` as incomplete work.
       - Title is under 80 characters
       - Short description is under 90 characters
       - Long description is under 350 characters

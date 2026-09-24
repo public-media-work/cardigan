@@ -69,7 +69,10 @@ Your output should look EXACTLY like this (plain markdown, no JSON):
 **Keywords Included:** [list primary keywords present]
 
 **Reasoning:**
-[Explain keyword placement and character count — brief]
+[Explain keyword placement — brief. Do NOT report character counts and do NOT
+show your revisions: every field above must contain only the FINAL value.
+Never emit working text such as "113 chars - exceeds limit, revised below" or
+"(130 chars)". The pipeline measures lengths deterministically.]
 
 **Alternatives:**
 1. [Alternative title option 1]
