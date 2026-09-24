@@ -2371,9 +2371,24 @@ Extract any name or spelling corrections that should be added to the glossary. S
                         cost=response.cost,
                         tokens=response.total_tokens,
                         model=response.model,
+                        # Recorded on every phase so a reasoning budget-eater is
+                        # visible rather than hidden inside output_tokens (#403).
+                        extra={"reasoning_tokens": getattr(response, "reasoning_tokens", 0)},
                     ),
                 )
             )
+
+            if getattr(response, "reasoning_tokens", 0):
+                logger.info(
+                    "Phase spent tokens on reasoning",
+                    extra={
+                        "job_id": job_id,
+                        "phase": phase_name,
+                        "model": response.model,
+                        "reasoning_tokens": response.reasoning_tokens,
+                        "output_tokens": response.output_tokens,
+                    },
+                )
 
             return {
                 "success": True,
@@ -2382,6 +2397,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "tokens": response.total_tokens,
                 "input_tokens": response.input_tokens,
                 "output_tokens": response.output_tokens,
+                "reasoning_tokens": getattr(response, "reasoning_tokens", 0),
                 "model": response.model,
             }
 
