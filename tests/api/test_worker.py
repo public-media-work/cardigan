@@ -1159,3 +1159,40 @@ class TestWorkerRestartSignal:
             return_value=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ):
             assert await worker._should_stop_for_restart() is False
+
+
+class TestReasoningPerPhase:
+    """Reasoning tokens share the max_tokens budget, so the formatter disables them.
+
+    Measured on anthropic/claude-sonnet-5 with max_tokens=16384: reasoning took
+    12575 of 16384 tokens and the formatter stopped mid-sentence at 2044 words.
+    With reasoning off the same prompt finished cleanly in 6023 tokens (#403/#404).
+    """
+
+    def _worker_with_config(self, routing):
+        from types import SimpleNamespace
+
+        from api.services.worker import JobWorker
+
+        worker = JobWorker()
+        worker.llm = SimpleNamespace(config={"routing": routing})
+        return worker
+
+    def test_formatter_disables_reasoning(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter") == {"enabled": False}
+
+    def test_other_phases_keep_reasoning(self):
+        """The validator is a judgment task — leave its reasoning alone."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("validator") is None
+
+    def test_disabled_phases_is_configurable(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter", "timestamp"]}})
+        assert worker._reasoning_payload("timestamp") == {"enabled": False}
+        assert worker._reasoning_payload("analyst") is None
+
+    def test_missing_config_leaves_reasoning_untouched(self):
+        """No reasoning config means no opinion — don't send the parameter."""
+        worker = self._worker_with_config({})
+        assert worker._reasoning_payload("formatter") is None

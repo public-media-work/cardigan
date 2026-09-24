@@ -1387,6 +1387,19 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 self._heartbeat_task = None
             self._current_job_id = None
 
+    def _reasoning_payload(self, phase_name: str) -> Optional[Dict[str, Any]]:
+        """Reasoning control to send for this phase, or None to leave it alone.
+
+        Reasoning tokens are drawn from the same max_tokens budget as visible
+        output, so on a reasoning-by-default model a formatter call can spend
+        most of its cap thinking and stop mid-transcript. Formatting is
+        deterministic work that does not need it; judgment phases may, so this
+        is per-phase rather than global (#404).
+        """
+        cfg = self.llm.config.get("routing", {}).get("reasoning", {})
+        disabled = cfg.get("disabled_phases") or []
+        return {"enabled": False} if phase_name in disabled else None
+
     def _phase_model(self, job, phase_name: str) -> Optional[str]:
         """Return the model the named phase actually ran on, from the job's
         persisted phases. Handles both JobPhase objects and dict entries.
@@ -2327,6 +2340,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 effective_timeout = 120
 
             # Call LLM with timeout
+            chat_kwargs: Dict[str, Any] = {}
+            reasoning = self._reasoning_payload(phase_name)
+            if reasoning is not None:
+                chat_kwargs["reasoning"] = reasoning
+
             response: LLMResponse = await asyncio.wait_for(
                 self.llm.chat(
                     messages=messages,
@@ -2334,6 +2352,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     model=model_override,
                     job_id=job_id,
                     phase=phase_name,
+                    **chat_kwargs,
                 ),
                 timeout=effective_timeout,
             )
@@ -2829,6 +2848,13 @@ Please format this transcript section:
                     {"role": "user", "content": user_message},
                 ]
 
+                # Chunked runs are still formatter work, so they honor the same
+                # reasoning control as the single-call path (#404).
+                chunk_kwargs: Dict[str, Any] = {}
+                chunk_reasoning = self._reasoning_payload("formatter")
+                if chunk_reasoning is not None:
+                    chunk_kwargs["reasoning"] = chunk_reasoning
+
                 response = await asyncio.wait_for(
                     self.llm.chat(
                         messages=messages,
@@ -2836,6 +2862,7 @@ Please format this transcript section:
                         job_id=job_id,
                         phase="formatter",
                         model=model_override,
+                        **chunk_kwargs,
                     ),
                     timeout=effective_timeout,
                 )

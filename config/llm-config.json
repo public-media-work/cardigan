@@ -149,6 +149,9 @@
     "speaker_segmentation": {
       "enabled": true
     },
+    "reasoning": {
+      "disabled_phases": ["formatter"]
+    },
     "chunking": {
       "enabled": true,
       "tokens_per_word": 2.0,
