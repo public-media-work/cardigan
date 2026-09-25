@@ -27,7 +27,9 @@ First cohort: `cardigan/2026-09-24-all-jobs/` — all 48 jobs on `cardigan01` as
 2026-09-24 (15 completed · 4 failed · 29 paused), exported before the paused/failed rows were
 deleted from the app. Mark's ruling: performance data only; the episodes already published.
 
-**Do not commit `test-runs/archive/` here.** This repo is public.
+**Do not commit `test-runs/archive/` here.** This repo is public. A single hand-vetted sample
+run (like the one above) is fine; bulk exports, anything not read line by line, and anything
+that accumulates automatically belong in the private repo.
 
 ## Layout of a run folder
 
