@@ -125,9 +125,11 @@ find yourself about to write a status document, put it in the issue instead.
   `docs/agents/triage-labels.md` (the five canonical labels),
   `docs/agents/domain.md` (what to read before exploring).
 
-The repo is `public-media-work/cardigan`. Note that the GHCR image prefix is
-`ghcr.io/mriechers/cardigan` — a different, still-current path. Don't "correct"
-one into the other.
+The repo is `public-media-work/cardigan` and images publish to
+`ghcr.io/public-media-work/cardigan-{api,worker,web,diarization}`. The older
+`ghcr.io/mriechers/cardigan-*` path is **retired**: after the repo moved orgs,
+`GITHUB_TOKEN` could no longer write another account's packages, which froze
+production at 2026-07-20 for two months. Don't reintroduce it.
 
 ### Picking up work
 
