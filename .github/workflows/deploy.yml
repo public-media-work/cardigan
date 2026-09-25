@@ -10,7 +10,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/mriechers/cardigan
+  IMAGE_PREFIX: ghcr.io/public-media-work/cardigan
 
 jobs:
   build-and-push:
@@ -32,6 +32,7 @@ jobs:
           python3 -m pip install --quiet setuptools_scm
           VERSION=$(python3 -m setuptools_scm)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VERSION"
 
       - name: Log in to GHCR
@@ -56,6 +57,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             SETUPTOOLS_SCM_PRETEND_VERSION_FOR_EDITORIAL_ASSISTANT=${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.IMAGE_PREFIX }}-api:latest
             ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}
@@ -71,6 +77,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             SETUPTOOLS_SCM_PRETEND_VERSION_FOR_EDITORIAL_ASSISTANT=${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.IMAGE_PREFIX }}-worker:latest
             ${{ env.IMAGE_PREFIX }}-worker:${{ github.sha }}
@@ -84,6 +95,11 @@ jobs:
           file: Dockerfile.web
           push: true
           platforms: linux/amd64,linux/arm64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.IMAGE_PREFIX }}-web:latest
             ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}
