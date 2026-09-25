@@ -12,12 +12,12 @@ If FORMATTER_URL_TEMPLATE is given (e.g. "http://cardigan01:8100/api/jobs/{id}/o
 the formatter artifact is fetched so the FORMATTER_CONTRACT_MARKERS half of the classifier runs too;
 otherwise that half is skipped and reported as such.
 """
+
 import json
 import os
 import re
-import sys
-
 import subprocess
+import sys
 
 
 class _Resp:
@@ -96,11 +96,18 @@ for j in paused:
     b = classify_with(QA1, vr, ctx)
     vr_c = strip_val1(vr)
     c = classify_with(QA1, vr_c, ctx) if vr_c.get("overall") == "fail" else {"escalate": None, "nonfixable": []}
-    tag = lambda x: "PASS-now" if x.get("escalate") is None else ("escalate" if x["escalate"] else "pause")  # noqa: E731
+
+    def tag(x):
+        if x.get("escalate") is None:
+            return "PASS-now"
+        return "escalate" if x["escalate"] else "pause"
+
     rows.append((j["id"], err, tag(a), tag(b), tag(c), "; ".join(a["nonfixable"])[:110]))
 
 print(f"paused jobs: {len(paused)}; formatter artifacts fetched: {'yes' if FMT_TPL else 'NO (marker half skipped)'}\n")
-print(f"{'job':>4} {'prod error_message':<70} {'A:now':<10} {'B:QA-1':<10} {'C:QA-1+VAL-1':<12} first non-fixable flag (A)")
+print(
+    f"{'job':>4} {'prod error_message':<70} {'A:now':<10} {'B:QA-1':<10} {'C:QA-1+VAL-1':<12} first non-fixable flag (A)"
+)
 for r in rows:
     print(f"{r[0]:>4} {r[1]:<70} {r[2]:<10} {r[3]:<10} {r[4]:<12} {r[5]}")
 

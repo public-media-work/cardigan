@@ -8,6 +8,7 @@ Usage:
   harness.py gate formatter [output.md]  -> completeness + seam gates
   harness.py gate validator [output.md]  -> parse + QA-gate routing
 """
+
 import json
 import os
 import sys
@@ -18,12 +19,16 @@ RUN = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 os.chdir(REPO)
 
-from api.services.worker import JobWorker  # noqa: E402
-from api.services.utils import calculate_transcript_metrics, parse_srt, get_srt_duration  # noqa: E402
-from api.services.completeness import check_completeness, count_content_words, count_source_words  # noqa: E402
-from api.services.seam_coverage import find_dropped_spans, format_gap_message, DEFAULT_BLOCKING_RATIO  # noqa: E402
-from api.services.escalation import classify_qa_failure, select_escalation_phases, nonfixable_review_message  # noqa: E402
 from api.services.chunking import split_transcript  # noqa: E402
+from api.services.completeness import check_completeness, count_content_words, count_source_words  # noqa: E402
+from api.services.escalation import (
+    classify_qa_failure,
+    nonfixable_review_message,
+    select_escalation_phases,
+)  # noqa: E402
+from api.services.seam_coverage import DEFAULT_BLOCKING_RATIO, find_dropped_spans, format_gap_message  # noqa: E402
+from api.services.utils import calculate_transcript_metrics, get_srt_duration, parse_srt  # noqa: E402
+from api.services.worker import JobWorker  # noqa: E402
 
 SRT_PATH = RUN / "6POL0213.srt"
 SRT = SRT_PATH.read_text(encoding="utf-8")
@@ -36,7 +41,9 @@ def load_sst():
     return json.loads(p.read_text()) if p.exists() else None
 
 
-ESC = os.environ.get("ESC")  # variant subdir name (e.g. esc, final): prefer <phase>/<ESC>/output.md and write prompts there
+ESC = os.environ.get(
+    "ESC"
+)  # variant subdir name (e.g. esc, final): prefer <phase>/<ESC>/output.md and write prompts there
 
 
 def phase_output(phase):
@@ -48,7 +55,9 @@ def phase_output(phase):
 
 def build_context(w):
     routing = w.llm.config.get("routing", {})
-    metrics = calculate_transcript_metrics(SRT, long_form_threshold_minutes=routing.get("long_form_threshold_minutes", 15))
+    metrics = calculate_transcript_metrics(
+        SRT, long_form_threshold_minutes=routing.get("long_form_threshold_minutes", 15)
+    )
     metrics = w._resolve_duration_into_metrics(metrics, SRT_PATH)
     JOB["duration_minutes"] = metrics["estimated_duration_minutes"]
     JOB["word_count"] = metrics["word_count"]
@@ -157,8 +166,15 @@ def write_chunk_prompts(w, context, chunks):
     if sst_context:
         sst_section = "\n## Single Source of Truth (SST) Context\n\n"
         for key in [
-            "title", "program", "short_description", "long_description", "host", "presenter",
-            "keywords", "social_media_description", "project_notes",
+            "title",
+            "program",
+            "short_description",
+            "long_description",
+            "host",
+            "presenter",
+            "keywords",
+            "social_media_description",
+            "project_notes",
         ]:
             if sst_context.get(key):
                 sst_section += f"**{key.replace('_', ' ').title()}:** {sst_context[key]}\n"
@@ -236,9 +252,17 @@ Please format this transcript section:
         (d / "system.md").write_text(system_prompt, encoding="utf-8")
         (d / "user.md").write_text(user_message, encoding="utf-8")
         (d / "chunk_meta.json").write_text(
-            json.dumps({"index": chunk.index, "word_count": chunk.word_count, "caption_range": getattr(chunk, "caption_range", None),
-                        "start": getattr(chunk, "start_time", None), "end": getattr(chunk, "end_time", None),
-                        "tail": section_tail}, default=str)
+            json.dumps(
+                {
+                    "index": chunk.index,
+                    "word_count": chunk.word_count,
+                    "caption_range": getattr(chunk, "caption_range", None),
+                    "start": getattr(chunk, "start_time", None),
+                    "end": getattr(chunk, "end_time", None),
+                    "tail": section_tail,
+                },
+                default=str,
+            )
         )
         print(f"  chunk {chunk.index}: {chunk.word_count} words, user.md {len(user_message)} chars -> {d}")
 
@@ -297,7 +321,10 @@ def cmd_gate_formatter(out_file=None):
     low = out.lower()
     print(
         "contract markers:",
-        {m: (m in low) for m in ["<!-- review notes", "status:** needs_review", "status:** ready_for_editing", "section 1 of"]},
+        {
+            m: (m in low)
+            for m in ["<!-- review notes", "status:** needs_review", "status:** ready_for_editing", "section 1 of"]
+        },
     )
     print("content words:", count_content_words(out))
 

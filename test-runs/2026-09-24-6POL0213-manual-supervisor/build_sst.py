@@ -1,5 +1,6 @@
 """Build sst_context.json exactly as worker._fetch_sst_context would from the live
 Airtable record for 6POL0213 (values pulled read-only via the Airtable MCP)."""
+
 import json
 import sys
 from pathlib import Path

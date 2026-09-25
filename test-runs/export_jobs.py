@@ -15,6 +15,7 @@ Usage:
   python test-runs/export_jobs.py --status paused failed --out ...
   CARDIGAN_API_URL=http://cardigan01:8100 (default)
 """
+
 import argparse
 import csv
 import json
@@ -110,10 +111,25 @@ def main() -> int:
             "validator_overall": vr.get("overall"),
             "validator_flags": flags,
             "phases": [
-                {k: p.get(k) for k in ("name", "status", "model", "cost", "tokens", "input_tokens", "output_tokens", "retry_count")}
+                {
+                    k: p.get(k)
+                    for k in (
+                        "name",
+                        "status",
+                        "model",
+                        "cost",
+                        "tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "retry_count",
+                    )
+                }
                 for p in phases
             ],
-            "chunked": any("chunked" in (open(jdir / f, encoding="utf-8").readline() if (jdir / f).exists() else "") for f in ["formatter_output.md"]),
+            "chunked": any(
+                "chunked" in (open(jdir / f, encoding="utf-8").readline() if (jdir / f).exists() else "")
+                for f in ["formatter_output.md"]
+            ),
             "artifacts_saved": saved,
         }
         index.append(row)
@@ -121,14 +137,31 @@ def main() -> int:
 
     (out / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
     cols = [
-        "id", "status", "media_id", "project_name", "transcript_file", "content_type", "duration_minutes",
-        "word_count", "chunked", "queued_at", "completed_at", "app_version", "actual_cost", "current_phase",
-        "retry_count", "auto_escalated_at", "validator_overall", "error_message",
+        "id",
+        "status",
+        "media_id",
+        "project_name",
+        "transcript_file",
+        "content_type",
+        "duration_minutes",
+        "word_count",
+        "chunked",
+        "queued_at",
+        "completed_at",
+        "app_version",
+        "actual_cost",
+        "current_phase",
+        "retry_count",
+        "auto_escalated_at",
+        "validator_overall",
+        "error_message",
     ]
     phase_names = ["analyst", "formatter", "seo", "validator", "timestamp"]
     with (out / "index.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(cols + [f"{p}_{k}" for p in phase_names for k in ("model", "cost", "output_tokens")] + ["validator_flags"])
+        w.writerow(
+            cols + [f"{p}_{k}" for p in phase_names for k in ("model", "cost", "output_tokens")] + ["validator_flags"]
+        )
         for r in index:
             by = {p["name"]: p for p in r["phases"]}
             w.writerow(
