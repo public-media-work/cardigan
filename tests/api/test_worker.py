@@ -1159,3 +1159,68 @@ class TestWorkerRestartSignal:
             return_value=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ):
             assert await worker._should_stop_for_restart() is False
+
+
+class TestTruncationMessage:
+    """#405: the truncation pause promised an escalation no code path performed.
+
+    'Retry to escalate to a more capable model' was false — pause_and_suggest
+    only sets status, the QA gate holding resolve_escalated_model is never
+    reached from the truncation branch, and retry_job nulls phase.model. Job 48
+    ran the formatter three times on anthropic/claude-sonnet-4.6 and paused
+    identically each time. Nothing bounded it: job.retry_count is only touched
+    by the stuck-job watchdog, so max_retries never engaged.
+    """
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_message_does_not_promise_escalation(self):
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "escalate" not in msg.lower()
+        assert "more capable model" not in msg.lower()
+
+    def test_message_states_the_measured_shortfall(self):
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "30%" in msg
+        assert "706" in msg and "2,318" in msg
+
+    def test_message_names_what_actually_helps(self):
+        """A stronger model does not fix a coverage shortfall; capacity does."""
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "max_tokens" in msg or "chunk" in msg.lower()
+
+    def test_repeat_truncation_says_retrying_will_repeat(self):
+        """The loop bound: after prior identical attempts, stop inviting another."""
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=3)
+        assert "3" in msg
+        assert "retry" in msg.lower()
+
+    def test_first_attempt_does_not_claim_repeats(self):
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "3 times" not in msg
+
+
+class TestOutputTruncatedRouting:
+    """#405 + #403: a provider length-stop should pause with an actionable
+    message, not hard-fail the job.
+
+    The generic handler raises, which marks the job failed. Credit exhaustion
+    already gets a clean pause for the same reason — the condition is
+    actionable, and failing burns a retry while leaving the operator with no
+    model picker (#406)."""
+
+    def test_formatter_attempt_count_reads_previous_runs(self):
+        from api.services.worker import JobWorker
+
+        worker = JobWorker()
+        job = {"phases": [{"name": "formatter", "previous_runs": [{"model": "x"}, {"model": "y"}]}]}
+        assert worker._phase_attempt_count(job, "formatter") == 3  # 2 prior + the current one
+
+    def test_attempt_count_is_one_on_a_first_run(self):
+        from api.services.worker import JobWorker
+
+        worker = JobWorker()
+        assert worker._phase_attempt_count({"phases": [{"name": "formatter"}]}, "formatter") == 1
