@@ -1,0 +1,257 @@
+{
+  "primary_backend": "openrouter",
+  "fallback_backend": "openrouter",
+  "backends": {
+    "openai-mini": {
+      "type": "openai",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "model": "gpt-4o-mini",
+      "api_key_env": "OPENAI_API_KEY",
+      "timeout": 180,
+      "cost_per_project": 0.012,
+      "enabled": false
+    },
+    "openai": {
+      "type": "openai",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "model": "gpt-4o",
+      "api_key_env": "OPENAI_API_KEY",
+      "timeout": 180,
+      "cost_per_project": 0.2,
+      "enabled": false
+    },
+    "openrouter-claude": {
+      "type": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "model": "anthropic/claude-sonnet-4.5",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout": 240,
+      "cost_per_project": 0.25
+    },
+    "gemini-flash": {
+      "type": "gemini",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+      "model": "gemini-1.5-flash",
+      "api_key_env": "GEMINI_API_KEY",
+      "timeout": 180,
+      "cost_per_project": 0.015
+    },
+    "gemini-flash-8b": {
+      "type": "gemini",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-8b:generateContent",
+      "model": "gemini-1.5-flash-8b",
+      "api_key_env": "GEMINI_API_KEY",
+      "timeout": 180,
+      "cost_per_project": 0.008
+    },
+    "gemini-pro": {
+      "type": "gemini",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent",
+      "model": "gemini-1.5-pro",
+      "api_key_env": "GEMINI_API_KEY",
+      "timeout": 240,
+      "cost_per_project": 0.08
+    },
+    "openrouter": {
+      "type": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "fallback_model": "anthropic/claude-sonnet-4.6",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout": 180,
+      "max_tokens": 16384,
+      "cost_per_project": 0.02
+    },
+    "openrouter-big-brain": {
+      "type": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "fallback_model": "anthropic/claude-opus-4.6",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout": 300,
+      "cost_per_project": 0.1
+    },
+    "openrouter-cheapskate": {
+      "type": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "fallback_model": "anthropic/claude-haiku-4.5",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout": 300,
+      "cost_per_project": 0.0,
+      "enabled": true
+    },
+    "openrouter-direct": {
+      "type": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout": 300
+    },
+    "local-llm": {
+      "type": "openai",
+      "endpoint": "http://studio.riechers.co:8000/v1/chat/completions",
+      "endpoint_env": "LOCAL_LLM_ENDPOINT",
+      "model": "PLACEHOLDER-set-via-model-fit-or-LOCAL_LLM_MODEL",
+      "model_env": "LOCAL_LLM_MODEL",
+      "api_key_env": "LOCAL_LLM_API_KEY",
+      "strip_reasoning": true,
+      "discover": true,
+      "defer_when_unavailable": true,
+      "max_tokens": 8192,
+      "timeout": 300,
+      "cost_per_project": 0.0,
+      "enabled": true
+    }
+  },
+  "auto_select": {
+    "enabled": true,
+    "preference_order": [
+      "openrouter"
+    ],
+    "check_interval_seconds": 5
+  },
+  "processing": {
+    "check_queue_interval_seconds": 300,
+    "batch_size": 4,
+    "parallel_processing": false
+  },
+  "worker": {
+    "max_concurrent_jobs": 3,
+    "poll_interval_seconds": 5,
+    "heartbeat_interval_seconds": 60
+  },
+  "qa_escalation": {
+    "on_validation_fail": true,
+    "max_auto_escalations": 1,
+    "skip_escalation_when_nonfixable": true,
+    "family_order": ["haiku", "sonnet", "opus"],
+    "exclude_variants": ["fast", "fable"]
+  },
+  "phase_backends": {
+    "analyst": "openrouter-cheapskate",
+    "formatter": "openrouter",
+    "seo": "openrouter-cheapskate",
+    "validator": "openrouter",
+    "timestamp": "openrouter",
+    "copy_editor": "openrouter-big-brain"
+  },
+  "routing": {
+    "completeness": {
+      "enabled": true,
+      "coverage_threshold": 0.70,
+      "min_source_words": 500,
+      "pause_on_truncation": true
+    },
+    "seam_coverage": {
+      "enabled": true,
+      "min_run": 4,
+      "per_caption_floor": 0.5,
+      "pause_on_gap": true,
+      "blocking_ratio": 0.98
+    },
+    "speaker_segmentation": {
+      "enabled": true
+    },
+    "chunking": {
+      "enabled": true,
+      "tokens_per_word": 2.0,
+      "safety_factor": 0.8,
+      "threshold_words": 3000,
+      "target_chunk_words": 2000,
+      "overlap_captions": 8,
+      "max_parallel": 3,
+      "min_tier": 1
+    },
+    "deferral": {
+      "backoff_minutes": [2, 5, 10, 15],
+      "ceiling_hours": 6
+    },
+    "style_engine": {
+      "enabled": true,
+      "rules_file": "config/house_style.yaml",
+      "keep_raw_on_fix": true,
+      "phases": {
+        "analyst":   {"pre": true, "post": "off"},
+        "formatter": {"pre": true, "post": "off"},
+        "seo":       {"pre": true, "post": "off"},
+        "validator": {"pre": true, "lint": "off"},
+        "timestamp": {"pre": true, "post": "off"}
+      },
+      "qa_gate": {"merge_flags": true, "fail_on_error": true}
+    }
+  },
+  "model_families": [
+    {
+      "name": "Claude Haiku",
+      "provider": "Anthropic",
+      "tier": 0,
+      "patterns": ["anthropic/claude-haiku-*"]
+    },
+    {
+      "name": "Claude Sonnet",
+      "provider": "Anthropic",
+      "tier": 1,
+      "patterns": ["anthropic/claude-sonnet-*"]
+    },
+    {
+      "name": "Claude Opus",
+      "provider": "Anthropic",
+      "tier": 2,
+      "patterns": ["anthropic/claude-opus-*"]
+    },
+    {
+      "name": "Gemini Flash",
+      "provider": "Google",
+      "tier": 0,
+      "patterns": ["google/gemini-*-flash*"]
+    },
+    {
+      "name": "Gemini Pro",
+      "provider": "Google",
+      "tier": 1,
+      "patterns": ["google/gemini-*-pro*"]
+    }
+  ],
+  "available_models": [
+    {
+      "id": "anthropic/claude-haiku-4.5",
+      "name": "Claude Haiku 4.5",
+      "provider": "Anthropic",
+      "tier": 0
+    },
+    {
+      "id": "google/gemini-3-flash-preview",
+      "name": "Gemini 3 Flash",
+      "provider": "Google",
+      "tier": 0
+    },
+    {
+      "id": "anthropic/claude-sonnet-4.6",
+      "name": "Claude Sonnet 4.6",
+      "provider": "Anthropic",
+      "tier": 1
+    },
+    {
+      "id": "google/gemini-3-pro-preview",
+      "name": "Gemini 3 Pro",
+      "provider": "Google",
+      "tier": 1
+    },
+    {
+      "id": "anthropic/claude-opus-4.6",
+      "name": "Claude Opus 4.6",
+      "provider": "Anthropic",
+      "tier": 2
+    }
+  ],
+  "phase_models": {
+    "analyst": "anthropic/claude-haiku-4.5",
+    "formatter": "anthropic/claude-sonnet-4.6",
+    "seo": "anthropic/claude-haiku-4.5",
+    "validator": "anthropic/claude-haiku-4.5",
+    "timestamp": "anthropic/claude-sonnet-4.6",
+    "copy_editor": "anthropic/claude-opus-4.6"
+  },
+  "safety": {
+    "run_cost_cap": 1.0,
+    "max_cost_per_1k_tokens": 0.05,
+    "model_allowlist": []
+  }
+}

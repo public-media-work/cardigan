@@ -7,6 +7,10 @@ formatter document's first horizontal rule -- i.e., inside the transcript
 body instead of at the top where house style (``phases.formatter.
 review_notes.placement == "top"``) requires it.
 
+The contract's own ``**Status:**`` footer is exempt: it legitimately sits
+after the final horizontal rule, and its ``needs_review`` value is a status,
+not a stray review note.
+
 This check has exactly one implementation, shared by two call sites that
 would otherwise carry duplicate copies of the same regex/logic:
 ``lint.run_lint`` (a validator-time re-check over the phase-output context
@@ -26,6 +30,16 @@ from api.services.style_engine.types import RuleViolation
 _HR_LINE_RE = re.compile(r"^-{3,}[ \t]*$", re.MULTILINE)
 _REVIEW_NOTE_MARKER_RE = re.compile(r"<!--\s*review|NEEDS_REVIEW|^##\s*Review Notes", re.IGNORECASE | re.MULTILINE)
 
+# The formatter contract (prompts/formatter.md) REQUIRES a closing
+# ``**Status:** {ready_for_editing | needs_review}`` footer, and that footer
+# necessarily sits after the document's final horizontal rule. Its
+# ``needs_review`` value would otherwise match _REVIEW_NOTE_MARKER_RE's bare
+# NEEDS_REVIEW alternative, so every transcript that correctly asks for human
+# review would be flagged as having a review note loose in its body. Blank the
+# footer line before scanning -- length-preserving, so match offsets in any
+# future span-reporting stay true to the original text.
+_STATUS_FOOTER_LINE_RE = re.compile(r"^\*\*Status:\*\*[^\n]*$", re.IGNORECASE | re.MULTILINE)
+
 
 def check_review_notes_placement(raw_output: str, review_notes_cfg: Mapping | None, phase: str) -> list[RuleViolation]:
     """Detect a review-note marker after the first horizontal rule.
@@ -42,7 +56,7 @@ def check_review_notes_placement(raw_output: str, review_notes_cfg: Mapping | No
     if not hr_match:
         return []
 
-    after_first_rule = raw_output[hr_match.end() :]
+    after_first_rule = _STATUS_FOOTER_LINE_RE.sub(lambda m: " " * len(m.group(0)), raw_output[hr_match.end() :])
     marker_match = _REVIEW_NOTE_MARKER_RE.search(after_first_rule)
     if not marker_match:
         return []
