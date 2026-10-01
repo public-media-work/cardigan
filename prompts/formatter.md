@@ -359,9 +359,11 @@ If captions show speakers talking over each other:
 ```markdown
 **John Smith:**
 [Describe the overlap in the line itself, e.g., "Both speakers agree enthusiastically."
-Name the speakers; do not invent a combined label and do not use a parenthetical.]
+Attribute it to the speaker it belongs to; do not invent a combined label and do
+not use a parenthetical. If neither name is known, use "Host:" and "Guest:" for
+BOTH turns — never mix a real name with a generic fallback.]
 
-**Host:**
+**Sarah Williams:**
 [Continues after overlap]
 ```
 

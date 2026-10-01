@@ -89,6 +89,36 @@ class TestFormatterSpeakerLabels:
             offenders.append(line.strip())
         assert not offenders, "formatter.md examples must obey its own no-parentheticals rule: " + "; ".join(offenders)
 
+    def test_examples_do_not_mix_named_and_generic_labels(self):
+        """Within one example, don't pair a real name with a generic fallback.
+
+        formatter.md:156 reserves "Host:"/"Guest:"/"Narrator:"/"Speaker N:" for
+        when a name CANNOT be determined. An example showing `**John Smith:**`
+        and `**Host:**` in consecutive turns reads either as one speaker with
+        two labels — violating the checklist's "speaker labels are consistent
+        throughout" — or as a second, unnamed speaker. The first fix for
+        PROMPT-2 introduced exactly that while removing a parenthetical, and
+        the parenthetical-only check could not see it (#412 review).
+        """
+        text = (PROMPTS / "formatter.md").read_text()
+        # Interchangeable stand-ins for a participant whose NAME is unknown.
+        # "Narrator" is deliberately excluded: it is a distinct role, not a
+        # fallback, so a named interviewee beside a Narrator is not a conflict.
+        fallbacks = {"host", "guest", "panel", "panelists"}
+        # Header/footer fields are bold-colon too, but they are not speakers.
+        metadata = {"project", "program", "duration", "date processed", "status", "raw input"}
+        offenders = []
+        for block in re.findall(r"```markdown\n(.*?)```", text, re.S):
+            labels = [m.strip() for m in re.findall(r"^\*\*([^*]+?):\*\*", block, re.M)]
+            labels = [lab for lab in labels if lab.lower() not in metadata]
+            has_named = any(
+                " " in lab and lab.lower() not in fallbacks and not lab.lower().startswith("speaker ") for lab in labels
+            )
+            has_fallback = any(lab.lower() in fallbacks or lab.lower().startswith("speaker ") for lab in labels)
+            if has_named and has_fallback:
+                offenders.append(labels)
+        assert not offenders, f"examples mix real names with generic fallbacks: {offenders}"
+
 
 class TestSeoDraftingTrail:
     """SEO-1 (#309): the character-count narration invited working text into the
@@ -96,7 +126,8 @@ class TestSeoDraftingTrail:
 
     def test_seo_prompt_forbids_revision_history(self):
         text = (PROMPTS / "seo.md").read_text().lower()
-        assert "final" in text and "do not report character counts" in text.replace("do not", "do not")
+        assert "final" in text
+        assert "do not report character counts" in text
 
 
 class TestAnalystTimings:
