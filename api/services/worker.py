@@ -72,6 +72,40 @@ KNOWLEDGE_DIR = Path(os.getenv("KNOWLEDGE_DIR", "knowledge"))
 RESTART_DRAIN_TIMEOUT_SECONDS = 60
 
 
+# Airtable field names read by _fetch_sst_context, keyed by the context key
+# they populate. Every name must exist on the SST table (tblTKFOwTvK7xw1H5)
+# — fields.get() on a name that isn't real returns None silently, so a
+# typo'd field simply never reaches any prompt (the old mapping read
+# "Title", "Program", "Keywords" and "Tags"; none exist). _fetch_sst_context
+# builds its mapping FROM this dict, and tests/test_sst_context_path.py pins
+# it against the schema — an inline literal can't drift past the contract.
+SST_CONTEXT_FIELD_MAP = {
+    "title": "Release Title",
+    "short_description": "Short Description",
+    "long_description": "Long Description",
+    "keywords": "General Keywords/Tags",
+    "host": "Host",
+    "presenter": "Presenter",
+    "media_id": "Media ID",
+    "social_media_description": "Social Media Description",
+}
+
+# Fields read outside the mapping above: the working-title fallback and the
+# Project link that supplies program identity and series notes.
+_SST_EXTRA_FIELDS = ("Batch-Episode", "Project")
+
+# The Projects-table fields read off the linked Project record (the SST has
+# no "Program" field; program identity is the Project's primary field).
+SST_PROJECT_FIELD_MAP = {
+    "program": "Project Name",
+    "project_notes": "Notes",
+    "project_description": "Project Description",
+}
+
+# The complete SST-table read surface, pinned against the schema snapshot.
+SST_CONTEXT_AIRTABLE_FIELDS = tuple(SST_CONTEXT_FIELD_MAP.values()) + _SST_EXTRA_FIELDS
+
+
 def _extract_speakers_from_sst(sst_context: Dict[str, Any]) -> Dict[str, Any]:
     """Extract host and panelist names from SST text fields.
 
@@ -1590,50 +1624,63 @@ Extract any name or spelling corrections that should be added to the glossary. S
         return "paused"
 
     async def _fetch_sst_context(self, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Fetch SST metadata from Airtable if job has linked record.
+        """Fetch SST metadata from Airtable for a job.
+
+        Resolves the SST record by airtable_record_id when the job carries
+        one, falling back to a Media ID search otherwise (#331 — jobs with
+        an extracted media_id but no stored link used to run with no SST
+        context at all).
 
         Args:
-            job: Job dict with potential airtable_record_id field
+            job: Job dict with potential airtable_record_id / media_id fields
 
         Returns:
             Dict with SST fields if found, None if no SST link or error
         """
         airtable_record_id = job.get("airtable_record_id")
-        if not airtable_record_id:
+        media_id = job.get("media_id")
+        if not airtable_record_id and not media_id:
             return None
 
         try:
             client = get_airtable_client()
-            record = await client.get_sst_record(airtable_record_id)
+            record = None
+            if airtable_record_id:
+                record = await client.get_sst_record(airtable_record_id)
+                if not record:
+                    logger.warning(
+                        "SST record not found", extra={"job_id": job.get("id"), "record_id": airtable_record_id}
+                    )
+
+            if record is None and media_id:
+                record = await client.search_sst_by_media_id(media_id)
+                if record:
+                    logger.info(
+                        "SST record resolved via media_id fallback",
+                        extra={"job_id": job.get("id"), "media_id": media_id, "record_id": record.get("id")},
+                    )
 
             if not record:
-                logger.warning("SST record not found", extra={"job_id": job.get("id"), "record_id": airtable_record_id})
                 return None
 
-            # Extract relevant fields for agent context
+            # Extract relevant fields for agent context, driven by the
+            # schema-pinned field map so an inline literal can't drift.
             fields = record.get("fields", {})
-            sst_context = {
-                "title": fields.get("Title"),
-                "short_description": fields.get("Short Description"),
-                "long_description": fields.get("Long Description"),
-                "keywords": fields.get("Keywords"),
-                "tags": fields.get("Tags"),
-                "host": fields.get("Host"),
-                "presenter": fields.get("Presenter"),
-                "program": fields.get("Program"),
-                "media_id": fields.get("Media ID"),
-                "social_media_description": fields.get("Social Media Description"),
-            }
+            sst_context = {key: fields.get(name) for key, name in SST_CONTEXT_FIELD_MAP.items()}
+            if not sst_context["title"]:
+                sst_context["title"] = fields.get("Batch-Episode")
 
-            # Follow Project linked record for series-level context
+            # Follow Project linked record for series-level context. The SST
+            # table has no "Program" field — program identity lives on the
+            # linked Project record's primary field.
             project_ids = fields.get("Project")
             if project_ids and isinstance(project_ids, list):
                 try:
                     project_record = await client.get_project_record(project_ids[0])
                     if project_record:
                         project_fields = project_record.get("fields", {})
-                        sst_context["project_notes"] = project_fields.get("Notes")
-                        sst_context["project_description"] = project_fields.get("Project Description")
+                        for key, name in SST_PROJECT_FIELD_MAP.items():
+                            sst_context[key] = project_fields.get(name)
                 except Exception as e:
                     logger.debug("Failed to fetch linked Project (non-fatal)", extra={"error": str(e)})
 
@@ -2808,7 +2855,6 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "host",
                 "presenter",
                 "keywords",
-                "tags",
                 "social_media_description",
                 "project_notes",
             ]:
@@ -3307,8 +3353,6 @@ Output a structured JSON checklist with:
                 sst_section += f"**Presenter:** {sst_context['presenter']}\n"
             if sst_context.get("keywords"):
                 sst_section += f"**Keywords:** {sst_context['keywords']}\n"
-            if sst_context.get("tags"):
-                sst_section += f"**Tags:** {sst_context['tags']}\n"
             if sst_context.get("social_media_description"):
                 sst_section += f"**Social Media Description:** {sst_context['social_media_description']}\n"
             if sst_context.get("project_notes"):
@@ -3497,6 +3541,12 @@ The editor reviewed the copy-edited transcript and requests these changes:
             formatted = context.get("formatter_output", "")
             seo = context.get("seo_output", "")
             prompt = "Validate the following pipeline outputs and return your JSON verdict.\n\n"
+
+            # Give the validator the same SST context the other phases get
+            # (#373): without it, factual errors against SST pass clean and
+            # SST-sourced facts get flagged as fabrications.
+            if sst_section:
+                prompt += sst_section
 
             # Add completeness check results if available
             completeness = context.get("completeness_check")
