@@ -39,6 +39,7 @@ from api.services.llm import (
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
+    OutputTruncatedError,
     end_run_tracking,
     get_llm_client,
     start_run_tracking,
@@ -69,6 +70,40 @@ KNOWLEDGE_DIR = Path(os.getenv("KNOWLEDGE_DIR", "knowledge"))
 # How long to let in-flight jobs drain on a restart before force-exiting.
 # A wedged job is reclaimed afterward by database.reset_stale_jobs().
 RESTART_DRAIN_TIMEOUT_SECONDS = 60
+
+
+# Airtable field names read by _fetch_sst_context, keyed by the context key
+# they populate. Every name must exist on the SST table (tblTKFOwTvK7xw1H5)
+# — fields.get() on a name that isn't real returns None silently, so a
+# typo'd field simply never reaches any prompt (the old mapping read
+# "Title", "Program", "Keywords" and "Tags"; none exist). _fetch_sst_context
+# builds its mapping FROM this dict, and tests/test_sst_context_path.py pins
+# it against the schema — an inline literal can't drift past the contract.
+SST_CONTEXT_FIELD_MAP = {
+    "title": "Release Title",
+    "short_description": "Short Description",
+    "long_description": "Long Description",
+    "keywords": "General Keywords/Tags",
+    "host": "Host",
+    "presenter": "Presenter",
+    "media_id": "Media ID",
+    "social_media_description": "Social Media Description",
+}
+
+# Fields read outside the mapping above: the working-title fallback and the
+# Project link that supplies program identity and series notes.
+_SST_EXTRA_FIELDS = ("Batch-Episode", "Project")
+
+# The Projects-table fields read off the linked Project record (the SST has
+# no "Program" field; program identity is the Project's primary field).
+SST_PROJECT_FIELD_MAP = {
+    "program": "Project Name",
+    "project_notes": "Notes",
+    "project_description": "Project Description",
+}
+
+# The complete SST-table read surface, pinned against the schema snapshot.
+SST_CONTEXT_AIRTABLE_FIELDS = tuple(SST_CONTEXT_FIELD_MAP.values()) + _SST_EXTRA_FIELDS
 
 
 def _extract_speakers_from_sst(sst_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -1011,6 +1046,16 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     )
                     return
 
+                if phase_result.get("output_truncated"):
+                    # Provider cut the output at its cap. Actionable, so pause with the
+                    # remedy rather than raising into a job-level failure (#405).
+                    logger.warning(
+                        "Job paused — provider truncated the phase output",
+                        extra={"job_id": job_id, "phase": phase_name, "project_name": project_name},
+                    )
+                    await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                    return
+
                 if phase_result.get("credit_exhausted"):
                     # OpenRouter is out of credit (Trigger B, #243). Pause the job
                     # with an actionable message instead of raising (which would
@@ -1099,12 +1144,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                             )
 
                             if completeness_config.get("pause_on_truncation", True):
-                                truncation_msg = (
-                                    f"TRUNCATION DETECTED: Formatter output covers only "
-                                    f"{completeness.coverage_ratio:.0%} of source transcript "
-                                    f"({completeness.output_word_count:,} / "
-                                    f"{completeness.source_word_count:,} words). "
-                                    f"Retry to escalate to a more capable model."
+                                truncation_msg = self._truncation_message(
+                                    coverage=completeness.coverage_ratio,
+                                    out_words=completeness.output_word_count,
+                                    src_words=completeness.source_word_count,
+                                    attempts=self._phase_attempt_count(job, "formatter"),
                                 )
                                 # Route truncation through the shared terminal
                                 # helper (Trigger C, #243) for a consistent
@@ -1245,6 +1289,13 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     if not opt_phase_updated:
                         phases.append(phase_data)
                     await update_job_phase(job_id, phases)
+
+                    # A provider length-stop is never non-fatal either: swallowing it
+                    # would ship a partial optional artifact as if it were complete,
+                    # which is the silent-success class #403 exists to close (#405).
+                    if phase_result.get("output_truncated"):
+                        await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                        return
 
                     # Credit exhaustion is NEVER non-fatal, even in an optional
                     # phase (Trigger B, #243). Pause-and-suggest before the swallow
@@ -1437,6 +1488,53 @@ Extract any name or spelling corrections that should be added to the glossary. S
             out += f"{feedback}\n"
         return out
 
+    def _phase_attempt_count(self, job, phase_name: str) -> int:
+        """How many times this phase has now run, counting the current attempt.
+
+        ``retry_job`` nulls ``phase.model`` but appends to ``previous_runs``, so
+        that list is the only durable record of prior attempts. ``job.retry_count``
+        is not: it is incremented solely by the stuck-job watchdog, which is why
+        ``max_retries`` never bounded the truncation loop (#405).
+        """
+        phases = (job or {}).get("phases") if isinstance(job, dict) else getattr(job, "phases", None)
+        for p in phases or []:
+            name = p.get("name") if isinstance(p, dict) else getattr(p, "name", None)
+            if name != phase_name:
+                continue
+            prev = (p.get("previous_runs") if isinstance(p, dict) else getattr(p, "previous_runs", None)) or []
+            return len(prev) + 1
+        return 1
+
+    def _truncation_message(self, *, coverage: float, out_words: int, src_words: int, attempts: int) -> str:
+        """Honest paused message for a coverage shortfall (#405).
+
+        The old text ended "Retry to escalate to a more capable model." No code
+        path escalated: the truncation branch returns before the QA gate that
+        owns ``resolve_escalated_model``, and a retry re-runs the same phase
+        model. So the message invited an action that provably repeats the same
+        result -- job 48 did it three times on anthropic/claude-sonnet-4.6.
+
+        It also pointed at the wrong remedy. A coverage shortfall is a capacity
+        problem (output cap, chunking), not a model-quality one; live evidence
+        on jobs 15-19 and 43/44/47 is that escalation swaps failure modes rather
+        than fixing them.
+        """
+        msg = (
+            f"TRUNCATION DETECTED: formatter output covers only {coverage:.0%} of the source "
+            f"transcript ({out_words:,} / {src_words:,} words). "
+        )
+        if attempts > 1:
+            msg += (
+                f"This phase has now produced short output {attempts} times on the same model; "
+                f"another plain retry will repeat it. "
+            )
+        msg += (
+            "This is a capacity problem, not a model-quality one: raise the backend's max_tokens, "
+            "or let chunking split the transcript, then retry. Escalating to a stronger model does "
+            "not resolve a coverage shortfall."
+        )
+        return msg
+
     def _phase_model(self, job, phase_name: str) -> Optional[str]:
         """Return the model the named phase actually ran on, from the job's
         persisted phases. Handles both JobPhase objects and dict entries.
@@ -1579,50 +1677,63 @@ Extract any name or spelling corrections that should be added to the glossary. S
         return "paused"
 
     async def _fetch_sst_context(self, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Fetch SST metadata from Airtable if job has linked record.
+        """Fetch SST metadata from Airtable for a job.
+
+        Resolves the SST record by airtable_record_id when the job carries
+        one, falling back to a Media ID search otherwise (#331 — jobs with
+        an extracted media_id but no stored link used to run with no SST
+        context at all).
 
         Args:
-            job: Job dict with potential airtable_record_id field
+            job: Job dict with potential airtable_record_id / media_id fields
 
         Returns:
             Dict with SST fields if found, None if no SST link or error
         """
         airtable_record_id = job.get("airtable_record_id")
-        if not airtable_record_id:
+        media_id = job.get("media_id")
+        if not airtable_record_id and not media_id:
             return None
 
         try:
             client = get_airtable_client()
-            record = await client.get_sst_record(airtable_record_id)
+            record = None
+            if airtable_record_id:
+                record = await client.get_sst_record(airtable_record_id)
+                if not record:
+                    logger.warning(
+                        "SST record not found", extra={"job_id": job.get("id"), "record_id": airtable_record_id}
+                    )
+
+            if record is None and media_id:
+                record = await client.search_sst_by_media_id(media_id)
+                if record:
+                    logger.info(
+                        "SST record resolved via media_id fallback",
+                        extra={"job_id": job.get("id"), "media_id": media_id, "record_id": record.get("id")},
+                    )
 
             if not record:
-                logger.warning("SST record not found", extra={"job_id": job.get("id"), "record_id": airtable_record_id})
                 return None
 
-            # Extract relevant fields for agent context
+            # Extract relevant fields for agent context, driven by the
+            # schema-pinned field map so an inline literal can't drift.
             fields = record.get("fields", {})
-            sst_context = {
-                "title": fields.get("Title"),
-                "short_description": fields.get("Short Description"),
-                "long_description": fields.get("Long Description"),
-                "keywords": fields.get("Keywords"),
-                "tags": fields.get("Tags"),
-                "host": fields.get("Host"),
-                "presenter": fields.get("Presenter"),
-                "program": fields.get("Program"),
-                "media_id": fields.get("Media ID"),
-                "social_media_description": fields.get("Social Media Description"),
-            }
+            sst_context = {key: fields.get(name) for key, name in SST_CONTEXT_FIELD_MAP.items()}
+            if not sst_context["title"]:
+                sst_context["title"] = fields.get("Batch-Episode")
 
-            # Follow Project linked record for series-level context
+            # Follow Project linked record for series-level context. The SST
+            # table has no "Program" field — program identity lives on the
+            # linked Project record's primary field.
             project_ids = fields.get("Project")
             if project_ids and isinstance(project_ids, list):
                 try:
                     project_record = await client.get_project_record(project_ids[0])
                     if project_record:
                         project_fields = project_record.get("fields", {})
-                        sst_context["project_notes"] = project_fields.get("Notes")
-                        sst_context["project_description"] = project_fields.get("Project Description")
+                        for key, name in SST_PROJECT_FIELD_MAP.items():
+                            sst_context[key] = project_fields.get(name)
                 except Exception as e:
                     logger.debug("Failed to fetch linked Project (non-fatal)", extra={"error": str(e)})
 
@@ -2221,6 +2332,25 @@ Extract any name or spelling corrections that should be added to the glossary. S
         ceiling_hours = cfg.get("ceiling_hours", 6)
         return backoff_minutes, ceiling_hours
 
+    async def _pause_for_output_truncation(self, job_id: int, detail: str) -> None:
+        """Terminal pause for a provider length-stop (#403/#405).
+
+        Mirrors ``_pause_for_credit``: status=paused with an actionable message,
+        retry count untouched. A cap that is too small is a configuration
+        problem, so it must not consume a retry or mark the job failed.
+        """
+        await pause_and_suggest(
+            job_id,
+            trigger="truncation",
+            message=(
+                f"{detail} Raise the backend's max_tokens or let chunking split the "
+                f"transcript, then retry — a stronger model has the same cap."
+            ).strip(),
+        )
+        run_summary = await end_run_tracking(job_id)
+        if run_summary:
+            await update_job_status(job_id, JobStatus.paused, actual_cost=run_summary["total_cost"])
+
     async def _pause_for_credit(self, job_id: int) -> None:
         """Terminal pause for OpenRouter credit exhaustion (Trigger B, #243).
 
@@ -2424,9 +2554,24 @@ Extract any name or spelling corrections that should be added to the glossary. S
                         cost=response.cost,
                         tokens=response.total_tokens,
                         model=response.model,
+                        # Recorded on every phase so a reasoning budget-eater is
+                        # visible rather than hidden inside output_tokens (#403).
+                        extra={"reasoning_tokens": getattr(response, "reasoning_tokens", 0)},
                     ),
                 )
             )
+
+            if getattr(response, "reasoning_tokens", 0):
+                logger.info(
+                    "Phase spent tokens on reasoning",
+                    extra={
+                        "job_id": job_id,
+                        "phase": phase_name,
+                        "model": response.model,
+                        "reasoning_tokens": response.reasoning_tokens,
+                        "output_tokens": response.output_tokens,
+                    },
+                )
 
             return {
                 "success": True,
@@ -2435,6 +2580,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "tokens": response.total_tokens,
                 "input_tokens": response.input_tokens,
                 "output_tokens": response.output_tokens,
+                "reasoning_tokens": getattr(response, "reasoning_tokens", 0),
                 "model": response.model,
             }
 
@@ -2454,6 +2600,31 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "error": e.detail,
                 "cost": 0,
                 "tokens": 0,
+            }
+
+        except OutputTruncatedError as e:
+            # The provider cut generation off at its cap (#403). Actionable, like
+            # credit exhaustion: caught BEFORE the generic handler so it pauses
+            # with a remedy instead of raising, which would mark the job failed
+            # and leave the operator without a model picker (#406).
+            logger.warning(
+                "Phase halted — provider truncated the output",
+                extra={
+                    "job_id": job_id,
+                    "phase": phase_name,
+                    "backend": e.backend,
+                    "output_tokens": e.output_tokens,
+                },
+            )
+            return {
+                "success": False,
+                "output_truncated": True,
+                "error": e.detail,
+                # The provider billed for what it generated before cutting us off.
+                # chat() never reached tracker.add_call(), so booking it here is
+                # what keeps the run cost cap and actual_cost honest (#403 review).
+                "cost": getattr(e, "cost", 0.0) or 0.0,
+                "tokens": e.output_tokens,
             }
 
         except BackendUnavailableError as e:
@@ -2737,7 +2908,6 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "host",
                 "presenter",
                 "keywords",
-                "tags",
                 "social_media_description",
                 "project_notes",
             ]:
@@ -3243,8 +3413,6 @@ Output a structured JSON checklist with:
                 sst_section += f"**Presenter:** {sst_context['presenter']}\n"
             if sst_context.get("keywords"):
                 sst_section += f"**Keywords:** {sst_context['keywords']}\n"
-            if sst_context.get("tags"):
-                sst_section += f"**Tags:** {sst_context['tags']}\n"
             if sst_context.get("social_media_description"):
                 sst_section += f"**Social Media Description:** {sst_context['social_media_description']}\n"
             if sst_context.get("project_notes"):
@@ -3433,6 +3601,12 @@ The editor reviewed the copy-edited transcript and requests these changes:
             formatted = context.get("formatter_output", "")
             seo = context.get("seo_output", "")
             prompt = "Validate the following pipeline outputs and return your JSON verdict.\n\n"
+
+            # Give the validator the same SST context the other phases get
+            # (#373): without it, factual errors against SST pass clean and
+            # SST-sourced facts get flagged as fabrications.
+            if sst_section:
+                prompt += sst_section
 
             # Add completeness check results if available
             completeness = context.get("completeness_check")
