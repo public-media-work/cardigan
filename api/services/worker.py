@@ -87,7 +87,7 @@ SST_CONTEXT_FIELD_MAP = {
     "host": "Host",
     "presenter": "Presenter",
     "media_id": "Media ID",
-    "social_media_description": "Social Media Description",
+    "social_media_description": "Social Media Description or Producer Draft",
 }
 
 # Fields read outside the mapping above: the working-title fallback and the
