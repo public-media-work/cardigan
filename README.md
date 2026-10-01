@@ -502,6 +502,18 @@ Edit `config/llm-config.json` to customize:
 
 ---
 
+## Lineage
+
+Cardigan is the third generation of this tool. The original codebase is preserved
+on a branch here, **for archival reference only** - it is not maintained, not
+runnable against the current stack, and shares no code with `main`:
+
+- [`legacy/ai-editorial-assistant`](../../tree/legacy/ai-editorial-assistant) - the v1
+  editorial assistant (44 commits, 2025). Superseded by v3, which became Cardigan.
+
+The repository was formerly `MarkOnFire/ai-editorial-assistant-v3`; some badges above
+still reference that path, which now redirects here.
+
 ## License
 
 Internal PBS Wisconsin tool -- not for distribution.

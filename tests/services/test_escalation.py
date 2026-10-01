@@ -120,13 +120,22 @@ def _vr(formatter_flags=None, seo_flags=None):
 
 
 def test_classify_review_notes_only_skips():
-    out = classify_qa_failure(_vr(formatter_flags=["Review notes appear in transcript body"]), {})
+    """Review notes genuinely left in the body skip escalation (detected on the artifact).
+
+    Rebased from flag prose onto the artifact in QA-1: the output is what proves
+    the notes are there. Matching the sentence could not tell this from a flag
+    reporting the block MISSING, and misrouted the latter to a human.
+    """
+    ctx = {"formatter_output": "# Formatted Transcript\n<!-- REVIEW NOTES:\n- verify spelling\n-->\n"}
+    out = classify_qa_failure(_vr(formatter_flags=["Review notes appear in transcript body"]), ctx)
     assert out["escalate"] is False
     assert out["nonfixable"] and not out["fixable"]
 
 
 def test_classify_needs_review_text_skips():
-    out = classify_qa_failure(_vr(formatter_flags=["Status field 'needs_review' indicates incomplete processing"]), {})
+    """A real needs_review status skips escalation — read from the artifact (QA-1)."""
+    ctx = {"formatter_output": "# Formatted Transcript\n\n**Status:** needs_review\n"}
+    out = classify_qa_failure(_vr(formatter_flags=["Status field 'needs_review' indicates incomplete processing"]), ctx)
     assert out["escalate"] is False
 
 
@@ -142,9 +151,10 @@ def test_classify_mixed_with_nonfixable_skips():
     # A single non-fixable flag makes escalation futile even when a model-fixable
     # flag sits beside it (the job still can't pass) -> skip escalation.
     # Live evidence: jobs 15-19 each escalated to Opus and still failed.
+    ctx = {"formatter_output": "# Formatted Transcript\n<!-- REVIEW NOTES:\n- verify\n-->\n"}
     out = classify_qa_failure(
         _vr(formatter_flags=["Review notes appear in transcript body"], seo_flags=["title exceeds 60 characters"]),
-        {},
+        ctx,
     )
     assert out["escalate"] is False
     assert out["fixable"] and out["nonfixable"]
@@ -204,3 +214,29 @@ def test_classify_style_fixable_prefix_alone_escalates():
     )
     assert out["escalate"] is True
     assert out["fixable"] and not out["nonfixable"]
+
+
+# ─── QA-1: prose substring matching misroutes model-fixable flags ──────
+
+
+def test_classify_flag_about_missing_review_notes_escalates():
+    """A flag about the ABSENCE of a review-notes block is model-fixable (QA-1).
+
+    Substring matching could not tell "review notes are present when they should
+    not be" — a real contract signal, and one the ARTIFACT shows — from "the
+    review-notes block is missing", which is ordinary output a re-run can fix.
+    Both contain "review note", so both were routed to a human with a message
+    about media_id and proper nouns. Live run 6POL0213 hit exactly this.
+    """
+    vr = _vr(formatter_flags=["Missing <!-- REVIEW NOTES --> block in formatter output"])
+    clean_artifact = {"formatter_output": "# Formatted Transcript\n\n**Status:** ready_for_editing\n"}
+    out = classify_qa_failure(vr, clean_artifact)
+    assert out["escalate"] is True
+    assert out["fixable"] and not out["nonfixable"]
+
+
+def test_classify_still_skips_genuinely_unfixable_flags():
+    """Narrowing the review-notes patterns must not loosen the others (QA-1 guard)."""
+    for flag in ("Media ID could not be determined", "Speaker remains unidentified", "SEMrush data unavailable"):
+        out = classify_qa_failure(_vr(formatter_flags=[flag]), {})
+        assert out["escalate"] is False, f"{flag!r} must stay non-fixable"

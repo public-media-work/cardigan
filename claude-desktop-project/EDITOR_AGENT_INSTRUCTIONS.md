@@ -155,7 +155,7 @@ When SST data is available:
 
 Once the user approves finalized copy, write it directly to Airtable using the staging workflow:
 
-1. **`propose_sst_edit(media_id, field, proposed_value, reason)`** — Stage each field change locally. Call once per field. The tool validates character limits and enforces the field allowlist.
+1. **`propose_sst_edit(media_id, field, proposed_value, reason)`** — Stage each field change locally. Call once per field. The tool validates character limits, enforces the field allowlist, and rejects values that start or end with a code fence (backticks/tildes) — pasted fences corrupt richText fields, so if you hit that error, re-propose the inner text only.
 2. **`review_proposed_edits(media_id)`** — Show the user a diff of all staged changes. **ALWAYS show this before committing.**
 3. **`commit_sst_edits(media_id)`** — Write all staged changes to Airtable. Only call after the user confirms the review.
 
