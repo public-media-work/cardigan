@@ -8,7 +8,7 @@
 
 services:
   api:
-    image: ghcr.io/mriechers/cardigan-api:latest
+    image: ghcr.io/public-media-work/cardigan-api:latest
     ports:
       - "8100:8000"
     environment:
@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ghcr.io/mriechers/cardigan-worker:latest
+    image: ghcr.io/public-media-work/cardigan-worker:latest
     environment:
       - DATABASE_PATH=/data/db/dashboard.db
       - OUTPUT_DIR=/data/output
@@ -79,7 +79,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/mriechers/cardigan-web:latest
+    image: ghcr.io/public-media-work/cardigan-web:latest
     ports:
       - "3100:3000"
       # Hardened remote-preview vhost. Dormant unless the htpasswd secret is
@@ -98,7 +98,7 @@ services:
     restart: unless-stopped
 
   mcp:
-    image: ghcr.io/mriechers/cardigan-api:latest
+    image: ghcr.io/public-media-work/cardigan-api:latest
     command: ["python", "-m", "mcp_server.server"]
     ports:
       - "8180:8080"
@@ -127,7 +127,7 @@ services:
     restart: unless-stopped
 
   diarization:
-    image: ghcr.io/mriechers/cardigan-diarization:latest
+    image: ghcr.io/public-media-work/cardigan-diarization:latest
     environment:
       - WHISPER_MODEL_SIZE=base
       - HF_TOKEN_FILE=/run/secrets/hf_token
