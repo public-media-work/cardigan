@@ -127,7 +127,7 @@
   "phase_backends": {
     "analyst": "openrouter-cheapskate",
     "formatter": "openrouter",
-    "seo": "openrouter-cheapskate",
+    "seo": "openrouter",
     "validator": "openrouter",
     "timestamp": "openrouter",
     "copy_editor": "openrouter-big-brain"
@@ -242,7 +242,7 @@
   "phase_models": {
     "analyst": "anthropic/claude-haiku-4.5",
     "formatter": "anthropic/claude-sonnet-4.6",
-    "seo": "anthropic/claude-haiku-4.5",
+    "seo": "anthropic/claude-sonnet-4.6",
     "validator": "anthropic/claude-haiku-4.5",
     "timestamp": "anthropic/claude-sonnet-4.6",
     "copy_editor": "anthropic/claude-opus-4.6"
