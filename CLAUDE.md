@@ -51,8 +51,6 @@ Rules for agents:
   `X-API-Key` header (exempt paths: `/`, `/api/system/health`, `/docs`,
   `/openapi.json`, `/api/ws/*`). The homelab box is currently unauthenticated +
   tailnet/LAN-only; read the key from the environment, never hard-code it.
-- The REST API is **read-only for SST** — there is no Airtable-write endpoint.
-  SST writes (`propose → review → commit`) exist only via the MCP server.
 
 See `docs/AGENT_INTERFACE_GUIDE.md` for the endpoint catalog.
 
