@@ -1410,6 +1410,32 @@ Extract any name or spelling corrections that should be added to the glossary. S
             )
         return ("\n\n".join(parts) + "\n\n") if parts else ""
 
+    def _chunk_header_fields(self, context: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """Authoritative header values for a chunked formatter merge (FMT-1).
+
+        Chunk 0 only sees its own slice, so a duration it writes is the
+        slice's -- job 24 reported 00:11:06 for an 18:37 episode -- and no
+        prompt can fix that. ``merge_formatter_chunks`` writes the header from
+        these values instead; a None falls back to chunk 0's value, except
+        Duration, which is omitted.
+
+        Duration is measured from the SRT's own timecodes, never from
+        ``transcript_metrics``: without an SRT that holds a word-count
+        estimate, which would be a plausible-looking wrong value.
+        """
+        from api.services.chunking import format_duration
+        from api.services.utils import get_srt_duration, parse_srt
+
+        duration = None
+        if context.get("transcript_file", "").lower().endswith(".srt"):
+            duration = format_duration(get_srt_duration(parse_srt(context.get("transcript", ""))) / 60000)
+        return {
+            "Project": context.get("project_name"),
+            "Program": (context.get("sst_context") or {}).get("program"),
+            "Duration": duration,
+            "Date Processed": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+
     def _retry_context_section(self, context: Dict[str, Any]) -> str:
         """Validator flags and editorial feedback to carry into a re-run (RETRY-1).
 
@@ -2982,7 +3008,10 @@ Please format this transcript section:
             actual_model = next((r.get("model") for r in chunk_results if r.get("model")), None)
 
             # Merge text outputs
-            merged = merge_formatter_chunks([r["content"] for r in chunk_results])
+            merged = merge_formatter_chunks(
+                [r["content"] for r in chunk_results],
+                header_fields=self._chunk_header_fields(context),
+            )
 
             # Style-engine post-generation hook, run ONCE on the merged output
             # (not per-chunk -- see `_apply_style_post` for shadow/enforce/
