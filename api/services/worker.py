@@ -40,6 +40,7 @@ from api.services.llm import (
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
+    OutputTruncatedError,
     end_run_tracking,
     get_llm_client,
     start_run_tracking,
@@ -1014,6 +1015,16 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     )
                     return
 
+                if phase_result.get("output_truncated"):
+                    # Provider cut the output at its cap. Actionable, so pause with the
+                    # remedy rather than raising into a job-level failure (#405).
+                    logger.warning(
+                        "Job paused — provider truncated the phase output",
+                        extra={"job_id": job_id, "phase": phase_name, "project_name": project_name},
+                    )
+                    await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                    return
+
                 if phase_result.get("credit_exhausted"):
                     # OpenRouter is out of credit (Trigger B, #243). Pause the job
                     # with an actionable message instead of raising (which would
@@ -1102,12 +1113,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                             )
 
                             if completeness_config.get("pause_on_truncation", True):
-                                truncation_msg = (
-                                    f"TRUNCATION DETECTED: Formatter output covers only "
-                                    f"{completeness.coverage_ratio:.0%} of source transcript "
-                                    f"({completeness.output_word_count:,} / "
-                                    f"{completeness.source_word_count:,} words). "
-                                    f"Retry to escalate to a more capable model."
+                                truncation_msg = self._truncation_message(
+                                    coverage=completeness.coverage_ratio,
+                                    out_words=completeness.output_word_count,
+                                    src_words=completeness.source_word_count,
+                                    attempts=self._phase_attempt_count(job, "formatter"),
                                 )
                                 # Route truncation through the shared terminal
                                 # helper (Trigger C, #243) for a consistent
@@ -1249,6 +1259,13 @@ Extract any name or spelling corrections that should be added to the glossary. S
                         phases.append(phase_data)
                     await update_job_phase(job_id, phases)
 
+                    # A provider length-stop is never non-fatal either: swallowing it
+                    # would ship a partial optional artifact as if it were complete,
+                    # which is the silent-success class #403 exists to close (#405).
+                    if phase_result.get("output_truncated"):
+                        await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                        return
+
                     # Credit exhaustion is NEVER non-fatal, even in an optional
                     # phase (Trigger B, #243). Pause-and-suggest before the swallow
                     # below would otherwise hide the credit problem and let the job
@@ -1387,7 +1404,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 self._heartbeat_task = None
             self._current_job_id = None
 
-    def _reasoning_payload(self, phase_name: str) -> Optional[Dict[str, Any]]:
+    def _reasoning_payload(self, phase_name: str, backend: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Reasoning control to send for this phase, or None to leave it alone.
 
         Reasoning tokens are drawn from the same max_tokens budget as visible
@@ -1395,10 +1412,70 @@ Extract any name or spelling corrections that should be added to the glossary. S
         most of its cap thinking and stop mid-transcript. Formatting is
         deterministic work that does not need it; judgment phases may, so this
         is per-phase rather than global (#404).
+
+        Gated on backend TYPE as well as phase. ``{"enabled": False}`` is
+        OpenRouter's wire format, and ``_call_openai`` spreads ``**kwargs``
+        straight into its payload — so sending this to an openai-type backend
+        would put an unrecognised ``reasoning`` field on the request, which a
+        real OpenAI-compatible endpoint can reject outright. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format (#404 review).
         """
         cfg = self.llm.config.get("routing", {}).get("reasoning", {})
-        disabled = cfg.get("disabled_phases") or []
-        return {"enabled": False} if phase_name in disabled else None
+        if phase_name not in (cfg.get("disabled_phases") or []):
+            return None
+        try:
+            backend_type = self.llm.get_backend_config(backend).get("type")
+        except Exception:
+            return None
+        return {"enabled": False} if backend_type == "openrouter" else None
+
+    def _phase_attempt_count(self, job, phase_name: str) -> int:
+        """How many times this phase has now run, counting the current attempt.
+
+        ``retry_job`` nulls ``phase.model`` but appends to ``previous_runs``, so
+        that list is the only durable record of prior attempts. ``job.retry_count``
+        is not: it is incremented solely by the stuck-job watchdog, which is why
+        ``max_retries`` never bounded the truncation loop (#405).
+        """
+        phases = (job or {}).get("phases") if isinstance(job, dict) else getattr(job, "phases", None)
+        for p in phases or []:
+            name = p.get("name") if isinstance(p, dict) else getattr(p, "name", None)
+            if name != phase_name:
+                continue
+            prev = (p.get("previous_runs") if isinstance(p, dict) else getattr(p, "previous_runs", None)) or []
+            return len(prev) + 1
+        return 1
+
+    def _truncation_message(self, *, coverage: float, out_words: int, src_words: int, attempts: int) -> str:
+        """Honest paused message for a coverage shortfall (#405).
+
+        The old text ended "Retry to escalate to a more capable model." No code
+        path escalated: the truncation branch returns before the QA gate that
+        owns ``resolve_escalated_model``, and a retry re-runs the same phase
+        model. So the message invited an action that provably repeats the same
+        result -- job 48 did it three times on anthropic/claude-sonnet-4.6.
+
+        It also pointed at the wrong remedy. A coverage shortfall is a capacity
+        problem (output cap, chunking), not a model-quality one; live evidence
+        on jobs 15-19 and 43/44/47 is that escalation swaps failure modes rather
+        than fixing them.
+        """
+        msg = (
+            f"TRUNCATION DETECTED: formatter output covers only {coverage:.0%} of the source "
+            f"transcript ({out_words:,} / {src_words:,} words). "
+        )
+        if attempts > 1:
+            msg += (
+                f"This phase has now produced short output {attempts} times on the same model; "
+                f"another plain retry will repeat it. "
+            )
+        msg += (
+            "This is a capacity problem, not a model-quality one: raise the backend's max_tokens, "
+            "or let chunking split the transcript, then retry. Escalating to a stronger model does "
+            "not resolve a coverage shortfall."
+        )
+        return msg
 
     def _phase_model(self, job, phase_name: str) -> Optional[str]:
         """Return the model the named phase actually ran on, from the job's
@@ -2184,6 +2261,25 @@ Extract any name or spelling corrections that should be added to the glossary. S
         ceiling_hours = cfg.get("ceiling_hours", 6)
         return backoff_minutes, ceiling_hours
 
+    async def _pause_for_output_truncation(self, job_id: int, detail: str) -> None:
+        """Terminal pause for a provider length-stop (#403/#405).
+
+        Mirrors ``_pause_for_credit``: status=paused with an actionable message,
+        retry count untouched. A cap that is too small is a configuration
+        problem, so it must not consume a retry or mark the job failed.
+        """
+        await pause_and_suggest(
+            job_id,
+            trigger="truncation",
+            message=(
+                f"{detail} Raise the backend's max_tokens or let chunking split the "
+                f"transcript, then retry — a stronger model has the same cap."
+            ).strip(),
+        )
+        run_summary = await end_run_tracking(job_id)
+        if run_summary:
+            await update_job_status(job_id, JobStatus.paused, actual_cost=run_summary["total_cost"])
+
     async def _pause_for_credit(self, job_id: int) -> None:
         """Terminal pause for OpenRouter credit exhaustion (Trigger B, #243).
 
@@ -2341,7 +2437,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
 
             # Call LLM with timeout
             chat_kwargs: Dict[str, Any] = {}
-            reasoning = self._reasoning_payload(phase_name)
+            reasoning = self._reasoning_payload(phase_name, backend)
             if reasoning is not None:
                 chat_kwargs["reasoning"] = reasoning
 
@@ -2448,6 +2544,31 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "error": e.detail,
                 "cost": 0,
                 "tokens": 0,
+            }
+
+        except OutputTruncatedError as e:
+            # The provider cut generation off at its cap (#403). Actionable, like
+            # credit exhaustion: caught BEFORE the generic handler so it pauses
+            # with a remedy instead of raising, which would mark the job failed
+            # and leave the operator without a model picker (#406).
+            logger.warning(
+                "Phase halted — provider truncated the output",
+                extra={
+                    "job_id": job_id,
+                    "phase": phase_name,
+                    "backend": e.backend,
+                    "output_tokens": e.output_tokens,
+                },
+            )
+            return {
+                "success": False,
+                "output_truncated": True,
+                "error": e.detail,
+                # The provider billed for what it generated before cutting us off.
+                # chat() never reached tracker.add_call(), so booking it here is
+                # what keeps the run cost cap and actual_cost honest (#403 review).
+                "cost": getattr(e, "cost", 0.0) or 0.0,
+                "tokens": e.output_tokens,
             }
 
         except BackendUnavailableError as e:
@@ -2851,7 +2972,7 @@ Please format this transcript section:
                 # Chunked runs are still formatter work, so they honor the same
                 # reasoning control as the single-call path (#404).
                 chunk_kwargs: Dict[str, Any] = {}
-                chunk_reasoning = self._reasoning_payload("formatter")
+                chunk_reasoning = self._reasoning_payload("formatter", backend)
                 if chunk_reasoning is not None:
                     chunk_kwargs["reasoning"] = chunk_reasoning
 

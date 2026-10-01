@@ -325,7 +325,11 @@ def split_transcript(
         threshold = cfg["threshold_words"]
         target = cfg["target_chunk_words"]
 
-    if word_count <= threshold:
+    # `<=` on the budget path (a transcript exactly at budget fits one call);
+    # `<` on the legacy path, preserving its original boundary exactly — the
+    # unified `<=` silently changed behaviour for a transcript landing on
+    # threshold_words, on a path this change was not meant to touch (#404 review).
+    if (word_count <= threshold) if max_output_tokens else (word_count < threshold):
         # Logged at info: prod previously had no record of WHY chunking was
         # skipped, which is what let #404 hide.
         logger.info(

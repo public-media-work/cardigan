@@ -280,8 +280,13 @@ async def test_call_openrouter_raises_on_null_content(monkeypatch):
 
     Observed live: the whole completion went to reasoning and content came back
     null. Returning that as success would write an empty transcript.
+
+    Raises OutputTruncatedError, not MalformedResponseError: chat() retries the
+    latter up to MALFORMED_BODY_MAX_ATTEMPTS for transient body corruption, and
+    this condition is deterministic — retrying bills three identical
+    completions and loses the remedy message (#403 review).
     """
-    from api.services.llm import MalformedResponseError
+    from api.services.llm import OutputTruncatedError
 
     client = LLMClient.__new__(LLMClient)
     client.active_backend = "openrouter"
@@ -291,10 +296,53 @@ async def test_call_openrouter_raises_on_null_content(monkeypatch):
 
     monkeypatch.setattr(client, "_post_openrouter", _post)
 
-    with pytest.raises(MalformedResponseError):
+    with pytest.raises(OutputTruncatedError):
         await client._call_openrouter(
             config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
             model="anthropic/claude-sonnet-5",
             messages=[{"role": "user", "content": "hi"}],
             api_key="fake-key",
         )
+
+
+async def test_truncated_call_carries_its_cost(monkeypatch):
+    """A length stop must carry the spend it already incurred (#403 review).
+
+    `cost` is computed from real usage before the finish_reason check. Dropping
+    it meant a truncated call — job 48 billed 1251 output tokens — never reached
+    the run cost tracker, because chat() only books on a successful return. The
+    run cost cap and the paused job's actual_cost both undercounted.
+    """
+    from api.services.llm import OutputTruncatedError
+
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    async def _post(endpoint, headers, payload):
+        return FakeRespReasoning(finish_reason="length", completion_tokens=16384, reasoning_tokens=12575)
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    with pytest.raises(OutputTruncatedError) as exc:
+        await client._call_openrouter(
+            config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+            model="anthropic/claude-sonnet-5",
+            messages=[{"role": "user", "content": "hi"}],
+            api_key="fake-key",
+        )
+
+    assert exc.value.cost > 0, "the tokens were billed; the cost must travel with the error"
+    assert exc.value.output_tokens == 16384
+
+
+def test_tracker_books_unusable_call():
+    """Billed-but-unusable spend lands in the run totals (#403 review)."""
+    from api.services.llm import RunCostTracker
+
+    tracker = RunCostTracker()
+    tracker.add_unusable_call(cost=0.25, output_tokens=16384, model="m", backend="openrouter")
+
+    assert tracker.total_cost == 0.25
+    assert tracker.total_output_tokens == 16384
+    assert tracker.call_count == 1
+    assert tracker.calls[0]["unusable"] is True

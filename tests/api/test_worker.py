@@ -1169,30 +1169,116 @@ class TestReasoningPerPhase:
     With reasoning off the same prompt finished cleanly in 6023 tokens (#403/#404).
     """
 
-    def _worker_with_config(self, routing):
+    def _worker_with_config(self, routing, backend_types=None):
         from types import SimpleNamespace
 
         from api.services.worker import JobWorker
 
+        types_by_backend = backend_types or {"openrouter": "openrouter", "openai": "openai"}
         worker = JobWorker()
-        worker.llm = SimpleNamespace(config={"routing": routing})
+        worker.llm = SimpleNamespace(
+            config={"routing": routing},
+            get_backend_config=lambda b: {"type": types_by_backend.get(b)},
+        )
         return worker
 
     def test_formatter_disables_reasoning(self):
         worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
-        assert worker._reasoning_payload("formatter") == {"enabled": False}
+        assert worker._reasoning_payload("formatter", "openrouter") == {"enabled": False}
 
     def test_other_phases_keep_reasoning(self):
         """The validator is a judgment task — leave its reasoning alone."""
         worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
-        assert worker._reasoning_payload("validator") is None
+        assert worker._reasoning_payload("validator", "openrouter") is None
 
     def test_disabled_phases_is_configurable(self):
         worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter", "timestamp"]}})
-        assert worker._reasoning_payload("timestamp") == {"enabled": False}
-        assert worker._reasoning_payload("analyst") is None
+        assert worker._reasoning_payload("timestamp", "openrouter") == {"enabled": False}
+        assert worker._reasoning_payload("analyst", "openrouter") is None
 
     def test_missing_config_leaves_reasoning_untouched(self):
         """No reasoning config means no opinion — don't send the parameter."""
         worker = self._worker_with_config({})
-        assert worker._reasoning_payload("formatter") is None
+        assert worker._reasoning_payload("formatter", "openrouter") is None
+
+    def test_not_sent_to_an_openai_type_backend(self):
+        """`{"enabled": False}` is OpenRouter's wire format (#404 review).
+
+        _call_openai spreads **kwargs straight into its payload, so sending it
+        there puts an unrecognised `reasoning` field on the request, which a
+        real OpenAI-compatible endpoint can reject. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format.
+        """
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openai") is None
+
+    def test_unknown_backend_sends_nothing(self):
+        """Fail closed: if the backend type can't be resolved, send no parameter."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}}, backend_types={})
+        assert worker._reasoning_payload("formatter", "mystery") is None
+
+
+class TestTruncationMessage:
+    """#405: the truncation pause promised an escalation no code path performed.
+
+    'Retry to escalate to a more capable model' was false — pause_and_suggest
+    only sets status, the QA gate holding resolve_escalated_model is never
+    reached from the truncation branch, and retry_job nulls phase.model. Job 48
+    ran the formatter three times on anthropic/claude-sonnet-4.6 and paused
+    identically each time. Nothing bounded it: job.retry_count is only touched
+    by the stuck-job watchdog, so max_retries never engaged.
+    """
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_message_does_not_promise_escalation(self):
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "escalate" not in msg.lower()
+        assert "more capable model" not in msg.lower()
+
+    def test_message_states_the_measured_shortfall(self):
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "30%" in msg
+        assert "706" in msg and "2,318" in msg
+
+    def test_message_names_what_actually_helps(self):
+        """A stronger model does not fix a coverage shortfall; capacity does."""
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "max_tokens" in msg or "chunk" in msg.lower()
+
+    def test_repeat_truncation_says_retrying_will_repeat(self):
+        """The loop bound: after prior identical attempts, stop inviting another."""
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=3)
+        assert "3" in msg
+        assert "retry" in msg.lower()
+
+    def test_first_attempt_does_not_claim_repeats(self):
+        msg = self._worker()._truncation_message(coverage=0.30, out_words=706, src_words=2318, attempts=1)
+        assert "3 times" not in msg
+
+
+class TestOutputTruncatedRouting:
+    """#405 + #403: a provider length-stop should pause with an actionable
+    message, not hard-fail the job.
+
+    The generic handler raises, which marks the job failed. Credit exhaustion
+    already gets a clean pause for the same reason — the condition is
+    actionable, and failing burns a retry while leaving the operator with no
+    model picker (#406)."""
+
+    def test_formatter_attempt_count_reads_previous_runs(self):
+        from api.services.worker import JobWorker
+
+        worker = JobWorker()
+        job = {"phases": [{"name": "formatter", "previous_runs": [{"model": "x"}, {"model": "y"}]}]}
+        assert worker._phase_attempt_count(job, "formatter") == 3  # 2 prior + the current one
+
+    def test_attempt_count_is_one_on_a_first_run(self):
+        from api.services.worker import JobWorker
+
+        worker = JobWorker()
+        assert worker._phase_attempt_count({"phases": [{"name": "formatter"}]}, "formatter") == 1
