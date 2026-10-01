@@ -36,6 +36,7 @@ from api.services.escalation import (
     select_escalation_phases,
 )
 from api.services.llm import (
+    DEFAULT_MAX_TOKENS,
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
@@ -863,7 +864,9 @@ Extract any name or spelling corrections that should be added to the glossary. S
             routing_config = self.llm.config.get("routing", {})
             threshold_minutes = routing_config.get("long_form_threshold_minutes", 15)
             transcript_metrics = calculate_transcript_metrics(
-                transcript_content, long_form_threshold_minutes=threshold_minutes
+                transcript_content,
+                long_form_threshold_minutes=threshold_minutes,
+                is_srt=str(job.get("transcript_file", "")).lower().endswith(".srt"),
             )
             # Prefer SRT-parsed duration over the word-count estimate so every
             # downstream consumer (routing, prompt context, persisted
@@ -1434,6 +1437,32 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     logger.warning("Heartbeat cleanup error", extra={"job_id": job_id, "error": str(e)})
                 self._heartbeat_task = None
             self._current_job_id = None
+
+    def _reasoning_payload(self, phase_name: str, backend: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Reasoning control to send for this phase, or None to leave it alone.
+
+        Reasoning tokens are drawn from the same max_tokens budget as visible
+        output, so on a reasoning-by-default model a formatter call can spend
+        most of its cap thinking and stop mid-transcript. Formatting is
+        deterministic work that does not need it; judgment phases may, so this
+        is per-phase rather than global (#404).
+
+        Gated on backend TYPE as well as phase. ``{"enabled": False}`` is
+        OpenRouter's wire format, and ``_call_openai`` spreads ``**kwargs``
+        straight into its payload — so sending this to an openai-type backend
+        would put an unrecognised ``reasoning`` field on the request, which a
+        real OpenAI-compatible endpoint can reject outright. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format (#404 review).
+        """
+        cfg = self.llm.config.get("routing", {}).get("reasoning", {})
+        if phase_name not in (cfg.get("disabled_phases") or []):
+            return None
+        try:
+            backend_type = self.llm.get_backend_config(backend).get("type")
+        except Exception:
+            return None
+        return {"enabled": False} if backend_type == "openrouter" else None
 
     def _phase_attempt_count(self, job, phase_name: str) -> int:
         """How many times this phase has now run, counting the current attempt.
@@ -2373,6 +2402,10 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     exc_info=True,
                 )
 
+        # Get backend for this phase. Resolved before the chunking decision so the
+        # backend's output cap can drive it (#404).
+        backend = self.llm.get_backend_for_phase(phase_name)
+
         # Check for chunked formatter processing
         if phase_name == "formatter":
             chunking_config = self.llm.config.get("routing", {}).get("chunking", {})
@@ -2381,10 +2414,17 @@ Extract any name or spelling corrections that should be added to the glossary. S
 
                 transcript_file = context.get("transcript_file", "")
                 is_srt = transcript_file.lower().endswith(".srt")
+                # Chunk on projected output vs. what one call can emit, not on a
+                # static word threshold that said nothing about output size.
+                try:
+                    max_output_tokens = self.llm.get_backend_config(backend).get("max_tokens", DEFAULT_MAX_TOKENS)
+                except Exception:
+                    max_output_tokens = DEFAULT_MAX_TOKENS
                 chunks = split_transcript(
                     context.get("transcript", ""),
                     is_srt=is_srt,
                     config=chunking_config,
+                    max_output_tokens=max_output_tokens,
                 )
                 if chunks is not None:
                     logger.info(
@@ -2411,8 +2451,6 @@ Extract any name or spelling corrections that should be added to the glossary. S
             {"role": "user", "content": user_message},
         ]
 
-        # Get backend for this phase
-        backend = self.llm.get_backend_for_phase(phase_name)
         logger.info(
             "Running phase",
             extra={
@@ -2445,6 +2483,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 effective_timeout = 120
 
             # Call LLM with timeout
+            chat_kwargs: Dict[str, Any] = {}
+            reasoning = self._reasoning_payload(phase_name, backend)
+            if reasoning is not None:
+                chat_kwargs["reasoning"] = reasoning
+
             response: LLMResponse = await asyncio.wait_for(
                 self.llm.chat(
                     messages=messages,
@@ -2452,6 +2495,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     model=model_override,
                     job_id=job_id,
                     phase=phase_name,
+                    **chat_kwargs,
                 ),
                 timeout=effective_timeout,
             )
@@ -2971,6 +3015,13 @@ Please format this transcript section:
                     {"role": "user", "content": user_message},
                 ]
 
+                # Chunked runs are still formatter work, so they honor the same
+                # reasoning control as the single-call path (#404).
+                chunk_kwargs: Dict[str, Any] = {}
+                chunk_reasoning = self._reasoning_payload("formatter", backend)
+                if chunk_reasoning is not None:
+                    chunk_kwargs["reasoning"] = chunk_reasoning
+
                 response = await asyncio.wait_for(
                     self.llm.chat(
                         messages=messages,
@@ -2978,6 +3029,7 @@ Please format this transcript section:
                         job_id=job_id,
                         phase="formatter",
                         model=model_override,
+                        **chunk_kwargs,
                     ),
                     timeout=effective_timeout,
                 )

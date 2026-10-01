@@ -1161,6 +1161,64 @@ class TestWorkerRestartSignal:
             assert await worker._should_stop_for_restart() is False
 
 
+class TestReasoningPerPhase:
+    """Reasoning tokens share the max_tokens budget, so the formatter disables them.
+
+    Measured on anthropic/claude-sonnet-5 with max_tokens=16384: reasoning took
+    12575 of 16384 tokens and the formatter stopped mid-sentence at 2044 words.
+    With reasoning off the same prompt finished cleanly in 6023 tokens (#403/#404).
+    """
+
+    def _worker_with_config(self, routing, backend_types=None):
+        from types import SimpleNamespace
+
+        from api.services.worker import JobWorker
+
+        types_by_backend = backend_types or {"openrouter": "openrouter", "openai": "openai"}
+        worker = JobWorker()
+        worker.llm = SimpleNamespace(
+            config={"routing": routing},
+            get_backend_config=lambda b: {"type": types_by_backend.get(b)},
+        )
+        return worker
+
+    def test_formatter_disables_reasoning(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openrouter") == {"enabled": False}
+
+    def test_other_phases_keep_reasoning(self):
+        """The validator is a judgment task — leave its reasoning alone."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("validator", "openrouter") is None
+
+    def test_disabled_phases_is_configurable(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter", "timestamp"]}})
+        assert worker._reasoning_payload("timestamp", "openrouter") == {"enabled": False}
+        assert worker._reasoning_payload("analyst", "openrouter") is None
+
+    def test_missing_config_leaves_reasoning_untouched(self):
+        """No reasoning config means no opinion — don't send the parameter."""
+        worker = self._worker_with_config({})
+        assert worker._reasoning_payload("formatter", "openrouter") is None
+
+    def test_not_sent_to_an_openai_type_backend(self):
+        """`{"enabled": False}` is OpenRouter's wire format (#404 review).
+
+        _call_openai spreads **kwargs straight into its payload, so sending it
+        there puts an unrecognised `reasoning` field on the request, which a
+        real OpenAI-compatible endpoint can reject. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format.
+        """
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openai") is None
+
+    def test_unknown_backend_sends_nothing(self):
+        """Fail closed: if the backend type can't be resolved, send no parameter."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}}, backend_types={})
+        assert worker._reasoning_payload("formatter", "mystery") is None
+
+
 class TestTruncationMessage:
     """#405: the truncation pause promised an escalation no code path performed.
 
