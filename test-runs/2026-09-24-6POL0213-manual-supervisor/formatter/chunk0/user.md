@@ -1,0 +1,1529 @@
+CRITICAL: You MUST preserve ALL spoken dialogue VERBATIM. Do NOT summarize, condense, paraphrase, or reword.
+Every sentence spoken in the transcript must appear in your output using the speaker's actual words.
+You may remove filler words (um, uh) and fix grammar/punctuation, but do NOT rephrase, rewrite, or generate new copy.
+If the speaker said it, those exact words must appear in the output. Do NOT substitute your own phrasing.
+If a caption is garbled or unclear, include your best reconstruction rather than dropping it. NEVER silently omit content.
+SPELLING: Always use "partisan" (not "partizan"), "bipartisan" (not "bipartisan"). Program names like "Inside Wisconsin Politics" are NOT italicized.
+
+COVERAGE MANDATE: Format EVERY line of the section below, in order, from its first line through to its last. Do NOT skip, summarize, or jump over any portion of the section.
+This section ENDS with the following line — your formatted output MUST reach and include it (do not stop before it):
+---
+>> The straight line.
+---
+
+IMPORTANT: This is section 1 of 2 of a long transcript being processed in parts. Later sections cover the rest of the transcript. Your section legitimately ends partway through — do NOT assess overall transcript completeness, do NOT claim the transcript is truncated, incomplete, or cut off, and do NOT set a 'needs_review' status on that basis. Format only the dialogue in this section.
+
+Using the following analysis as guidance:
+
+
+## Single Source of Truth (SST) Context
+
+**Title:** Republican mega-donors, gas costs and fighting 'corruption' | Inside Wisconsin Politics
+**Program:** Inside Wisconsin Politics
+**Short Description:** Mega-donors fund Republican candidates, gas prices, and corruption as an issue.
+
+**Long Description:** Mega-donors fund Republican candidates, gas prices cause growing economic pain, and corruption emerges as an issue — Inside Wisconsin Politics looks at how each development impacts the 2026 election.
+**Host:** Shawn Johnson
+**Presenter:** Zac Schultz, Anya van Wagtendonk, Rich Kremer
+**Project Notes:** **WPM News Politics Roundup**
+WPR News and PBS Wisconsin News are collaborating to launch a new political news product in 2026. We know reporting on Wisconsin state government and politics news is one of the primary areas of interest for our readers, listeners and viewers. Our coverage in this area rivals or is superior to anything else in the market and there is an opportunity to reach new audiences by tailoring the delivery of this content to their needs. The weekly show will build on areas of strength for both teams and serve highly engaged audiences across a variety of platforms.
+
+The show will be a 17-18 minute discussion of the most significant political and government news of the week. It will focus on diving deep into what various actions by state leaders mean for residents and what significance their actions might have politically. The conversational round table will typically be led by WPR Capitol Bureau Chief Shawn Johnson and include PBS Wisconsin News Senior Political Reporter Zac Schultz and WPR Political Reporters Anya van Wagtendonk and Rich Kremer. Conversations will be capped at four participants and typically include at least three of the core team. Other reporters may rotate in as their coverage overlaps with the scope of the round table. 
+
+_Fundraising for this project is attached to the Focus Fund for Journalism (as of 4.2.26 LB)_
+
+
+
+## Transcript Glossary
+
+# PBS Wisconsin Transcript Glossary
+
+Authoritative spelling and naming reference for all transcript processing agents (analyst, formatter, copy-editor). When in doubt, this file is correct — do NOT "autocorrect" names to more common spellings.
+
+## How to Use This Glossary
+
+- **Before formatting**: Scan the glossary for names and terms that appear in the transcript
+- **When a name has multiple common spellings**: Use the spelling listed here, not the one the model "prefers"
+- **After editor review**: New corrections should be added to the appropriate section
+
+---
+
+## Whisper Prompt Terms
+
+Terms merged into the WhisperX `initial_prompt` for audio transcription jobs.
+This is Cardigan's project layer of the workspace glossary (base:
+`automations/transcripts/glossary.md` in the pbswi workspace); the project
+layer wins on conflict. Only lines beginning with `- ` are injected into
+prompts, lowest priority after speaker names and per-job context terms —
+keep this header prose bullet-free.
+
+- PBS Wisconsin
+- Frederica Freyberg
+- Shawn Johnson
+- Zac Schultz
+- Rich Kremer
+- Anya van Wagtendonk
+- Janet Protasiewicz
+- Brian Hagedorn
+- Michael Gableman
+- Jim Troupis
+- Brad Schimel
+- Jill Karofsky
+- Rebecca Dallet
+- Josh Kaul
+- Eric Toney
+- Sean Duffy
+- Manitowoc
+- Waukesha
+- Sheboygan
+- Oconomowoc
+- Fond du Lac
+- Wauwatosa
+- Menominee
+- Ashwaubenon
+- Wausau
+- Eau Claire
+- La Crosse
+- Kenosha
+- Oshkosh
+- Wisconsin Elections Commission
+- Act 10
+- Tavern League
+- Attorney General Kaul
+
+## Place Names
+
+| Correct | Common Misspellings |
+|---------|-------------------|
+| Manitowoc | Manitowac, Mannitowoc |
+| Waukesha | Wakesha, Walkeesha |
+| Sheboygan | Sheyboygan, Sheboygen |
+| Oconomowoc | Oconowomoc, Oconomowac |
+| Fond du Lac | Fond de Lac, Fondalac |
+| Wauwatosa | Wawatosa, Wauwautosa |
+| Menominee | Menomonie, Menomonee |
+| Ashwaubenon | Ashwaubanon |
+| Wausau | Wasau |
+| Eau Claire | Eau Clair |
+| La Crosse | Lacrosse, La Cross |
+| Kenosha | Kanosha |
+| Oshkosh | Oshcosh |
+| Appleton | (rarely misspelled) |
+| Green Bay | (rarely misspelled) |
+
+## Political Figures (Current/Recent)
+
+| Correct | Role | Common Misspellings |
+|---------|------|-------------------|
+| Janet Protasiewicz | Supreme Court Justice | Protasewicz, Protasavich |
+| Brian Hagedorn | Former Supreme Court Justice | Hagadorn, Hagedoorn |
+| Michael Gableman | Former Supreme Court Justice | Gabbleman, Gabellman |
+| Jim Troupis | Attorney | Troupes, Troopis |
+| Brad Schimel | Former Atty. Gen. | Schimmel, Shimel |
+| Jill Karofsky | Supreme Court Justice | Karovsky, Karofski |
+| Rebecca Dallet | Supreme Court Justice | Dallett, Dalet |
+| David Prosser | Former Supreme Court Justice | Prossar |
+| Tony Evers | Governor | (rarely misspelled) |
+| Robin Vos | Assembly Speaker | (rarely misspelled) |
+| Josh Kaul | Attorney General | Kohl, Call |
+| Dan Kelly | Former Supreme Court Justice | (rarely misspelled) |
+| Eric Toney | Politician | Tony, Toni |
+| Sean Duffy | Former U.S. Rep. / Secretary of Transportation | Shawn Duffy |
+
+## Legal Cases
+
+| Correct | Common Misspellings |
+|---------|-------------------|
+| Kaul v. Urmanski | Kohl v. Urmanski, Call vs Urmanski |
+| Clarke v. WEC | Clark v. WEC |
+| Trump v. Biden (WI) | (rarely misspelled) |
+
+## Institutions
+
+| Correct | Abbreviation | Notes |
+|---------|-------------|-------|
+| Wisconsin Public Radio | WPR | |
+| PBS Wisconsin | | Formerly WPT/Wisconsin Public Television |
+| UW-Madison | | Not "University of Wisconsin Madison" in running text |
+| Marquette Law School | | Often "Marquette poll" |
+| Wisconsin Elections Commission | WEC | |
+| Department of Justice | DOJ | Wisconsin state DOJ, not federal |
+
+## PBS Wisconsin Programs & Hosts
+
+| Program | Host/Anchor | Regular Panelists |
+|---------|------------|-------------------|
+| Inside Wisconsin Politics | Shawn Johnson | Zac Schultz, Rich Kremer, Anya van Wagtendonk |
+| Here & Now | Frederica Freyberg | |
+| Wisconsin Life | | (various segment producers) |
+| University Place | | (various lecturers) |
+
+## Wisconsin-Specific Terms
+
+| Term | Notes |
+|------|-------|
+| Capitol | The building/district in Madison (not "capital" unless referring to money) |
+| Act 10 | 2011 law restricting public employee unions |
+| Tavern League | Tavern League of Wisconsin (lobbying group) |
+| Dells | Wisconsin Dells (tourism area) |
+| Up North | Colloquial for northern Wisconsin |
+| FIBs | Colloquial for Illinois visitors (use cautiously) |
+
+## Editor Corrections
+
+Names and terms corrected during human editorial review. These represent cases where the model consistently gets the wrong spelling or the caption source is unreliable.
+
+| Correct | Model Tendency | Context |
+|---------|---------------|---------|
+| Sean Duffy | Shawn Duffy | Former WI congressman; model confuses with IWP host Shawn Johnson |
+| Josh Kaul | Josh Gold | WI Attorney General; 6HNP2511 sign-off - named on mic only once |
+| Attorney General Kaul | Attorney General Call | 6HNP2511 open. Keep key as full phrase - a bare Call rewrites the verb |
+| Josh Kaul | Josh Kahl | 6HNP2511 Toney interview. Third distinct misrender of the same name - see whisper-ops FINDINGS-2026-09-09-toney |
+
+## Name Disambiguation
+
+Names that appear in PBS Wisconsin transcripts where the model may confuse similar-sounding or similar-looking names. Pay special attention when both names could plausibly appear.
+
+| Name | Role | Do NOT confuse with |
+|------|------|-------------------|
+| Shawn Johnson | IWP host (PBS Wisconsin) | Sean Duffy (politician) |
+| Sean Duffy | Former U.S. Rep. / Sec. of Transportation | Shawn Johnson (IWP host) |
+| Anya van Wagtendonk | IWP panelist | — |
+
+
+---
+# Brainstorming Document
+**Project:** 6POL0213
+**Program:** Inside Wisconsin Politics
+**Date Processed:** 2026-09-24
+**Agent:** transcript-analyst
+**Model:** claude-haiku-4-5-20251001
+
+---
+
+## Summary
+
+Inside Wisconsin Politics examines the financial and policy landscape of Wisconsin's 2026 gubernatorial race with 17 minutes of roundtable discussion among political reporters. The episode centers on three interconnected developments reshaping the election: unprecedented conservative spending from a new outside group (First Amendment LLC, $13 million invested), the economic anxiety driven by surging gas prices affecting voter behavior, and competing anti-corruption platforms from both gubernatorial candidates David Crowley and Tom Tiffany. The hosts and panelists dissect what mega-donor spending signals about Republican confidence in Wisconsin as a winnable state, why populist economic issues dominate voter discourse over policy nuance, and how the 2026 race reflects a national realignment in which Democrats are being pulled to fight elsewhere while Republicans concentrate resources in the Badger State.
+
+## Key Themes
+
+1. **Outside Money & Campaign Finance Loopholes** - Conservative mega-donors (Diane Hendricks, Richard Uihlein) are funneling unlimited cash to the Republican Party of Wisconsin through a campaign finance loophole that caps individual donations to candidates but not to parties. First Amendment LLC, formed one week prior, immediately reported $13 million in spending against Democratic gubernatorial candidate David Crowley, signaling unprecedented coordination between outside groups and state-level politics.
+
+2. **Economic Populism & Gas Prices** - Rising fuel costs, particularly diesel affecting farmers and truckers, have become the dominant voter concern. Unlike political elites discussing nuance and international supply chains, ordinary voters assign blame to whoever holds office, making gas prices a powerful electoral cudgel regardless of governmental responsibility.
+
+3. **Anti-Corruption & Government Accountability** - Both candidates frame corruption as a central campaign issue but target different audiences. Crowley emphasizes federal corruption (stock trading bans, revolving door restrictions), while Tiffany focuses on state-level fraud (Medicaid audits, agency budget transparency), reflecting their respective partisan bases and national positioning.
+
+4. **Wisconsin's Competitive Battleground Status** - Despite unfavorable national environment for Republicans, major donors believe Wisconsin remains winnable. Panelists discuss both state-specific factors (tight races, redistricting battles won by Democrats) and national dynamics (Democratic donors divided across multiple states, fewer resources flowing to Wisconsin).
+
+5. **Democratic Donor Fragmentation** - Ben Wikler's former leadership of the Democratic Party positioned Wisconsin as a priority for national donors focused on redistricting and electoral votes. With that argument exhausted and opportunities in other states, Democratic mega-donors are investing elsewhere, partially explaining Republican financial advantage this cycle.
+
+6. **Party Realignment & Electoral Momentum** - A reversal from 2022 when Tony Evers and Democrats led in spending. Now Republicans outspend Democrats, suggesting confidence in the electorate and the Assembly/Senate maps as potential backup strategies if the gubernatorial race tightens.
+
+## Speakers & Roles
+
+| Speaker | Role/Title | Context | First Appearance |
+|---------|------------|---------|------------------|
+| Shawn Johnson | Host / WPR Capitol Bureau Chief | Leads the roundtable discussion from Eau Claire; frames election context and candidate analysis | 0:00 |
+| Rich Kremer | WPR Political Reporter | Covers First Amendment LLC spending and Republican campaign finance strategy; discusses Tom Tiffany's anti-corruption platform and federal investigations | 0:00 |
+| Zac Schultz | PBS Wisconsin News Senior Political Reporter | Analyzes Democratic donor dynamics, Ben Wikler's influence, and the divergence between state and national electoral priorities; discusses candidate messaging | 0:00 |
+| Anya van Wagtendonk | WPR Political Reporter | Covers David Crowley's anti-corruption platform and the dynamic between the two candidates' policy responses | 0:00 |
+
+## Structural Breakdown
+
+### Act 1: Opening & Context (0:00 - 3:00)
+- Host Shawn Johnson introduces the episode theme: mega-donors, gas costs, corruption
+- Establishes the three main topics affecting the 2026 election
+- Introduces panel and announces Eau Claire location
+
+### Act 2: First Amendment LLC Spending (3:00 - 8:00)
+- Rich Kremer breaks down First Amendment LLC: $13 million total, $9 million against David Crowley, $3.4 million for Assembly/Senate races
+- Group formed one week prior to filing; described as express advocacy group not directly affiliated with candidates
+- Connection to Virginia-based Make Liberty Win PAC; unclear funding sources but appears to have $40+ million backing
+- Biggest spender in 2026 cycle so far
+
+### Act 3: Republican vs. Democratic Fundraising Advantage (8:00 - 12:00)
+- Top spenders: First Amendment LLC and Republican Party of Wisconsin
+- Contrast with 2022: Tony Evers and Democrats led spending that year
+- Mega-donors named: Diane Hendricks, Richard Uihlein; Uihlein running ads for Tom Tiffany
+- Zac Schultz explains Democratic donor shift: national donors focusing on other states (Senate, Congress), less flowing to Wisconsin
+- Ben Wikler factor: former Democratic Party chair's departure may have weakened fundraising prowess and national donor relationships
+
+### Act 4: Why Republicans See Wisconsin as Winnable (12:00 - 17:00)
+- Shawn Johnson notes 2010 wave election comparison; money doesn't always guarantee victory
+- David Crowley is not well-known, giving Republicans opportunity to "define him" early
+- Zac Schultz discusses national vs. state dynamics: Midwest races tightening (Minnesota, Michigan, Maine), making Wisconsin competitive
+- National donors pulled in multiple directions; Wisconsin still tight but not drawing mega-donor focus Democrats once commanded
+- Republican focus on Assembly as backstop: if gubernatorial race lost, controlling legislature still allows blocking Democratic agenda
+
+### Act 5: Gas Prices as Electoral Issue (17:00 - 24:00)
+- Zac Schultz explains why gas prices dominate: voters care about personal economic pain, not policy nuance
+- Neither party has good answer when fuel costs rise; blame attaches to sitting officeholder
+- Tom Tiffany voted against Democratic War Powers Resolution on Iran conflict (connected to fuel prices) but doesn't want to cross Trump
+- Republican Derrick Van Orden (Third Congressional District) unexpectedly blamed oil companies for price gouging
+- International factors (Trump-Iran conflict) affecting domestic prices; voters don't distinguish
+
+### Act 6: Anti-Corruption Platforms - Competing Narratives (24:00 - 28:00)
+- David Crowley proposes: stock trading ban for state officeholders, participation in prediction markets ban, 2-year cooling-off period for energy regulators, public records law changes
+- Frames corruption as Washington problem that states must counter locally without naming Trump directly
+- Tom Tiffany proposes: more audits of state agencies (already done by Legislative Audit Bureau), Department of Administration budget oversight, modernization of OpenBook Wisconsin transparency tool
+- Focuses on federal investigations (Medicaid fraud, Minnesota fraud examples) as model for state-level audits
+- Both candidates compelled to respond to each other's platforms, indicating race competitiveness and candidate awareness of tight polling
+
+### Act 7: Democratic Unity & Party Consolidation (28:00 - 30:00)
+- Francesca Hong (close primary finisher) conducting unity tour with David Crowley
+- Hong emphasizes Democrats need "trifecta" (governor, legislature both chambers)
+- Question of whether Hong's supporters will consolidate around Crowley
+- Tight Wisconsin races mean Democrats cannot afford defections or reduced turnout from primary losers
+
+### Act 8: Closing (30:00 - 30:30)
+- Host directs viewers to PBS Wisconsin, WPR, YouTube, and podcast platforms
+- Standard sign-off
+
+## Key Quotes & Moments
+
+1. **2:00** - "By my math, they're the biggest spender so far in 2026. So who they are? They're called First Amendment LLC." - Rich Kremer - Establishes unprecedented spending level and introduces the key outside group driving the episode's opening narrative.
+
+2. **6:15** - "We're talking about this group was created last week, and on the same day it reported spending around $13 million." - Rich Kremer - Highlights the velocity and coordination of conservative financial push; single-day reporting of massive expenditure.
+
+3. **10:00** - "It appears to be affiliated with a different Virginia based PAC called Make Liberty Win, and Fox News did an article not long ago about a tech investor essentially putting $40 million into Make Liberty Win." - Rich Kremer - Traces funding to out-of-state sources and tech-wealth alignment with conservative causes.
+
+4. **15:30** - "So we're seeing a little bit of a flip of those two parties in terms of the money that they're bringing in and spending." - Rich Kremer - Summarizes the 2022-to-2026 reversal in campaign finance momentum.
+
+5. **22:00** - "I've spoken to so many people, some in my own family, who absolutely hate politics. They don't want anything to do with it. But when gas goes up, when eggs go up, when beef goes up, when they can feel it and see it everywhere, they say, why is this happening?" - Zac Schultz - Captures voter psychology: economic hardship transcends partisan identity and drives electoral behavior.
+
+6. **23:00** - "Biden can have all the answers in the world about why it was international. It wasn't his fault. Same thing's happening now. It's whoever is in charge is going to get blamed when prices surge, no matter what the nuance in an answer is." - Zac Schultz - Explains how incumbent penalty and economic anxiety override policy sophistication.
+
+7. **28:00** - "They both talked about going to fight corruption." - Shawn Johnson - Notes both candidates converging on anti-corruption framing despite targeting different corrupt actors and levels of government.
+
+8. **29:15** - "It's like every single year we hear Republicans talk about fraud and social welfare programs and more audits, more audits. There have been audits all along." - Zac Schultz - Reveals rebranding of established Republican talking points as responsive to voter concerns rather than new policy.
+
+## SEO Keywords (Preliminary)
+
+**Primary:** Wisconsin 2026 governor's race
+
+**Secondary:**
+- Republican campaign spending Wisconsin
+- First Amendment LLC Wisconsin
+- Mega-donors Richard Uihlein Wisconsin
+- Diane Hendricks conservative donor
+- David Crowley Tom Tiffany governor
+- Wisconsin gubernatorial election 2026
+
+**Location-Specific:**
+- Wisconsin
+- Eau Claire Wisconsin
+- Third Congressional District Wisconsin
+- Green Bay Wisconsin
+
+**Topical:**
+- campaign finance loopholes
+- Outside money politics
+- gas prices inflation 2026
+- anti-corruption government transparency
+- Wisconsin state government
+- Republican assembly control
+- redistricting Wisconsin
+- voter persuasion economic issues
+- federal investigations Medicaid fraud
+- tax policy Wisconsin
+- state legislature elections Wisconsin
+
+## Editorial Opportunities
+
+- **Hook:** "Mega-donors pour $13 million into Wisconsin race as Republicans sense winning opportunity" or "Gas prices and anti-corruption emerge as central battleground issues in Wisconsin's 2026 governor's race"
+
+- **Unique Angle:** The episode documents a real-time reversal in campaign finance momentum from 2022 (Democrats dominant) to 2026 (Republicans ascendant). The reporting also captures how both candidates are reframing voter concerns (economic anxiety, corruption fears) into pre-existing partisan messaging, suggesting sophistication in electoral persuasion.
+
+- **Audience Appeal:** Voters concerned about economic affordability, government accountability, and the influence of wealthy donors on politics; political insiders and campaign professionals tracking 2026 momentum; Wisconsin residents navigating gubernatorial choice with competing visions of anti-corruption.
+
+- **Searchability:** Audience will search for Wisconsin election 2026 news, gas price inflation blame, campaign finance donor tracking, anti-corruption policy comparison, and third-party spending on political ads.
+
+## Metadata Suggestions
+
+**Suggested Title (draft):**
+"Mega-donors fuel Republican push in Wisconsin's 2026 governor race" (70 chars)
+
+**Suggested Short Description (draft):**
+"Conservative groups pour $13 million into Wisconsin election; gas prices and corruption emerge as central issues affecting 2026 race." (131 chars - exceeds 90-char limit; revised below)
+
+"Conservative mega-donors spend $13 million in Wisconsin's 2026 governor race; gas prices and anti-corruption dominate campaign." (126 chars - still over; revised)
+
+"Mega-donors push $13M into Wisconsin race as gas prices and corruption reshape 2026 governor's election dynamics." (109 chars - still over; final revision)
+
+"$13 million Republican spending, gas price anxiety reshape Wisconsin 2026 governor race." (87 chars) ✓
+
+**Suggested Long Description (draft):**
+Inside Wisconsin Politics examines the financial and policy forces reshaping the 2026 gubernatorial race. A new conservative group, First Amendment LLC, has deployed $13 million against Democrat David Crowley in just one week, signaling unprecedented outside spending. Republican mega-donors Diane Hendricks and Richard Uihlein are funneling unlimited cash through campaign finance loopholes, while Democratic national donors pivot toward congressional races elsewhere. Meanwhile, surging gas prices have become the dominant voter concern, and both candidates—Crowley and Republican Tom Tiffany—are positioning anti-corruption platforms to address voter anxiety about government accountability and transparency. The episode captures how economic hardship and systemic concerns translate into electoral strategy.
+
+(Word count: ~108 words / 568 chars - within 350-char limit if we trim. Revised below)
+
+Conservative mega-donors fuel unprecedented spending in Wisconsin's 2026 governor race: First Amendment LLC has invested $13 million against Democrat David Crowley, while Republicans leverage campaign finance loopholes. Gas prices dominate voter sentiment, and both gubernatorial candidates frame anti-corruption platforms to address public anxiety. The episode reveals how national political dynamics affect state races and how economic hardship translates into electoral strategy. (79 words / 438 chars) ✓
+
+## Production Notes
+
+- **Caption Source:** Live captioning (speakers labeled with `>>` in SRT; refined by panelist introductions and SST context)
+- **Speaker Attribution:** All four panelists clearly identified in SST and at 0:22 introduction; no ambiguity
+- **Accuracy Note:** Glossary provided with verified spellings for all political figures mentioned (Shawn Johnson, Zac Schultz, Rich Kremer, Anya van Wagtendonk, Diane Hendricks, Richard Uihlein, David Crowley, Tom Tiffany, Tony Evers, Francesca Hong, Ben Wikler, etc.)
+- **Location:** Recorded in Eau Claire as noted by Shawn Johnson at 0:25
+- **Format:** Standard roundtable discussion format; four panelists, one host; conversational flow with clear turn-taking
+- **Visual Descriptions:** None present in transcript (audio-only program); no on-screen graphics noted
+
+## Review Items for Formatter
+
+- [x] All speaker attributions verified against SST and glossary
+- [x] Political figures and place names verified against transcript glossary for correct spelling
+- [x] Timecode accuracy: SRT file spans 0:00 to 18:04 (matches reported 18.1 min duration)
+- [x] No audio gaps or inaudible passages noted
+- [x] No caption quality issues requiring manual correction identified
+- [x] Proper nouns (Shawn Johnson, Zac Schultz, Rich Kremer, Anya van Wagtendonk, First Amendment LLC, Make Liberty Win, David Crowley, Tom Tiffany, Diane Hendricks, Richard Uihlein, Francesca Hong, Ben Wikler) all correctly captured
+
+---
+
+**Next Steps:** This document will inform the formatter's transcript cleanup, the copy-editor's refinement of titles and descriptions for Airtable SST, and the SEO agent's keyword expansion and search optimization.
+
+---
+
+Please format this transcript:
+
+---
+1
+00:00:01,001 --> 00:00:03,370
+>> Okay? Big money pours
+into Wisconsin for the
+
+2
+00:00:03,437 --> 00:00:06,406
+midterms with a big
+financial edge for
+
+3
+00:00:06,473 --> 00:00:09,243
+conservatives. Who's behind
+the push and what are the
+
+4
+00:00:09,309 --> 00:00:11,411
+candidates saying about
+issues ranging from gas
+
+5
+00:00:11,478 --> 00:00:15,315
+prices to corruption? This
+is inside Wisconsin
+
+6
+00:00:15,382 --> 00:00:17,050
+politics.
+
+7
+00:00:19,653 --> 00:00:22,723
+politics. I'm Shawn Johnson
+here with my colleagues,
+
+8
+00:00:22,789 --> 00:00:24,591
+Anya van Wagtendonk Zac
+Schultz and Rich Kremer in
+
+9
+00:00:24,658 --> 00:00:25,674
+Eau Claire. Hey, everyone.
+
+10
+00:00:25,674 --> 00:00:26,026
+>> Hello.
+
+11
+00:00:26,093 --> 00:00:28,729
+>> So we have a lot of
+issues to discuss today,
+
+12
+00:00:28,795 --> 00:00:31,598
+but I think we need to
+start right off the top
+
+13
+00:00:31,665 --> 00:00:34,635
+with this big financial
+push from conservatives and
+
+14
+00:00:34,701 --> 00:00:36,570
+specifically one
+conservative group, which
+
+15
+00:00:36,637 --> 00:00:40,774
+is dumping a lot of money
+into Wisconsin all at once.
+
+16
+00:00:40,841 --> 00:00:44,077
+Rich, you covered this
+group. They are pretty much
+
+17
+00:00:44,144 --> 00:00:47,648
+brand new and already there
+are huge spender. Tell us
+
+18
+00:00:47,714 --> 00:00:51,084
+about who they are and what
+they're doing here.
+
+19
+00:00:51,151 --> 00:00:54,221
+>> By my math, they're the
+biggest spender so far in
+
+20
+00:00:54,288 --> 00:00:58,258
+2026. So who they are?
+They're called First
+
+21
+00:00:58,325 --> 00:01:01,862
+Amendment LLC. It is an
+express advocacy group, so
+
+22
+00:01:01,929 --> 00:01:06,900
+it's not affiliated with
+any specific candidate,
+
+23
+00:01:06,967 --> 00:01:10,604
+etc. or campaign. But it is
+obviously a conservative
+
+24
+00:01:10,671 --> 00:01:14,174
+group because all the money
+that they're putting into
+
+25
+00:01:14,241 --> 00:01:17,010
+Wisconsin is going against
+Democrats, and it's a lot
+
+26
+00:01:17,077 --> 00:01:19,913
+of money, too. We're
+talking about this group
+
+27
+00:01:19,980 --> 00:01:23,984
+was created last week, and
+on the same day it reported
+
+28
+00:01:24,051 --> 00:01:29,289
+spending around $13 million.
+And that's divided up by $9
+
+29
+00:01:30,791 --> 00:01:33,260
+million, going against
+David Crowley in the race
+
+30
+00:01:33,327 --> 00:01:37,731
+for governor and the
+remaining 3.4 million or so
+
+31
+00:01:37,798 --> 00:01:41,502
+going into key Assembly and
+Senate races, as
+
+32
+00:01:41,568 --> 00:01:44,471
+Republicans and Democrats
+vie for control of the
+
+33
+00:01:44,538 --> 00:01:48,108
+state legislature. And this
+money, we don't know much
+
+34
+00:01:48,175 --> 00:01:51,445
+about what it's going to be
+used for. But in the filing
+
+35
+00:01:51,512 --> 00:01:54,681
+it said it will be for
+direct mail campaign
+
+36
+00:01:54,748 --> 00:01:58,952
+literature, phone calls,
+digital ads, that sort of
+
+37
+00:01:59,019 --> 00:02:02,523
+thing. But it's hard to
+tell where the money is
+
+38
+00:02:02,589 --> 00:02:05,859
+coming from, who this group
+is. It appears to be
+
+39
+00:02:05,926 --> 00:02:09,630
+affiliated with a different
+Virginia based PAC called
+
+40
+00:02:09,696 --> 00:02:12,900
+Make Liberty Win, and Fox
+News did an article not
+
+41
+00:02:12,966 --> 00:02:16,970
+long ago about a tech
+investor essentially
+
+42
+00:02:17,838 --> 00:02:21,141
+putting $40 million into
+Make Liberty Win. I wasn't
+
+43
+00:02:21,208 --> 00:02:24,912
+able to see in the federal
+campaign finance reports
+
+44
+00:02:24,978 --> 00:02:27,781
+whether that money was
+transferred over, but it
+
+45
+00:02:27,848 --> 00:02:30,317
+appears that this new group
+is flush with cash.
+
+46
+00:02:30,384 --> 00:02:33,253
+>> Okay. And so this comes
+into an environment where
+
+47
+00:02:33,320 --> 00:02:35,822
+we already knew who some of
+the big donors were in
+
+48
+00:02:35,889 --> 00:02:39,426
+Wisconsin, because they do
+report their contributions.
+
+49
+00:02:39,493 --> 00:02:42,162
+And Republicans had a
+pretty big advantage there,
+
+50
+00:02:42,229 --> 00:02:43,884
+too, did they not?
+
+51
+00:02:43,884 --> 00:02:46,366
+>> They did. Yeah. And just
+
+52
+00:02:46,934 --> 00:02:50,771
+just the top spenders this
+year. I mean, it is the
+
+53
+00:02:50,838 --> 00:02:53,740
+First Amendment LLC group.
+And then it's the
+
+54
+00:02:53,807 --> 00:02:55,809
+Republican Party of
+Wisconsin. Those are the
+
+55
+00:02:55,876 --> 00:02:59,580
+two top spenders. And if
+you look back to 2022, the
+
+56
+00:02:59,646 --> 00:03:03,550
+last race for governor, it
+was Tony Evers was the
+
+57
+00:03:03,617 --> 00:03:07,754
+number one spender in state
+politics. And the second
+
+58
+00:03:07,821 --> 00:03:10,791
+place runner up was the
+Democratic Party of
+
+59
+00:03:10,858 --> 00:03:14,361
+Wisconsin. So we're seeing
+a little bit of a flip of
+
+60
+00:03:14,428 --> 00:03:16,530
+those two parties in terms
+of the money that they're
+
+61
+00:03:16,597 --> 00:03:18,074
+bringing in and spending.
+
+62
+00:03:18,074 --> 00:03:19,433
+>> And when it comes to
+
+63
+00:03:19,499 --> 00:03:22,169
+who's giving to the parties,
+you have big contributions
+
+64
+00:03:22,236 --> 00:03:26,473
+from billionaires Diane
+Hendricks and the U. Lines,
+
+65
+00:03:26,540 --> 00:03:28,642
+Richard Uihlein also has
+his own group that's
+
+66
+00:03:28,709 --> 00:03:32,312
+running ads to help Tom
+Tiffany Ana. This is a bit
+
+67
+00:03:32,379 --> 00:03:35,315
+of a switch, a flip, as we
+rich mentioned there, in
+
+68
+00:03:35,382 --> 00:03:38,385
+terms of what we've gotten
+used to in Wisconsin, where
+
+69
+00:03:38,452 --> 00:03:40,921
+Democrats seem to know how
+to use this state law that
+
+70
+00:03:40,988 --> 00:03:43,624
+lets unlimited money flow
+around from parties to
+
+71
+00:03:43,690 --> 00:03:44,097
+candidates.
+
+72
+00:03:44,097 --> 00:03:45,058
+>> Right? So you mentioned
+
+73
+00:03:45,125 --> 00:03:47,361
+those mega donors who have
+essentially put tons of
+
+74
+00:03:47,427 --> 00:03:49,530
+money into the Republican
+Party of Wisconsin, and
+
+75
+00:03:49,596 --> 00:03:51,832
+that's using a kind of
+loophole in campaign
+
+76
+00:03:51,899 --> 00:03:54,668
+finance law that says that
+there's a cap on how much
+
+77
+00:03:54,735 --> 00:03:56,803
+individuals can donate to
+campaigns. There is not a
+
+78
+00:03:56,870 --> 00:03:59,606
+cap on what you can give to
+parties, and then what
+
+79
+00:03:59,673 --> 00:04:02,509
+parties can spend. And so
+this was a law that was
+
+80
+00:04:02,576 --> 00:04:04,511
+passed by Republicans, but
+then Democrats ended up
+
+81
+00:04:04,578 --> 00:04:06,980
+using to kind of great
+effect over many years. But
+
+82
+00:04:07,047 --> 00:04:09,483
+so I think there's a couple
+of different reasons for
+
+83
+00:04:09,550 --> 00:04:11,718
+that, potentially. So one
+reason is just like a very
+
+84
+00:04:11,785 --> 00:04:14,655
+kind of local reason, which
+is that the former chair of
+
+85
+00:04:14,721 --> 00:04:16,657
+the Democratic Party, Ben
+Wikler, is just known for
+
+86
+00:04:16,723 --> 00:04:19,526
+his kind of fundraising
+prowess. And he has a sort
+
+87
+00:04:19,593 --> 00:04:22,062
+of national profile among
+national Democrats. He's
+
+88
+00:04:22,129 --> 00:04:24,531
+very well respected among
+sort of D.C. Democratic
+
+89
+00:04:24,598 --> 00:04:27,134
+circles. So he was really
+the person. It wasn't like
+
+90
+00:04:27,201 --> 00:04:29,436
+the Democratic Party
+immediately took advantage
+
+91
+00:04:29,503 --> 00:04:31,772
+of this law. It was when he
+came into leadership in the
+
+92
+00:04:31,839 --> 00:04:34,007
+Democratic Party that
+Democrats really kind of
+
+93
+00:04:34,074 --> 00:04:36,510
+took this and ran with it.
+So it's possible, now that
+
+94
+00:04:36,577 --> 00:04:38,512
+he's no longer in
+leadership, that that has
+
+95
+00:04:38,579 --> 00:04:41,515
+had some effect on the
+state party's ability to
+
+96
+00:04:41,582 --> 00:04:43,250
+fundraise. I think another
+thing also that's going on
+
+97
+00:04:43,317 --> 00:04:45,853
+here, though, is that even
+though the governor's race
+
+98
+00:04:45,919 --> 00:04:48,956
+is going to be very tight
+and is very important, and
+
+99
+00:04:49,022 --> 00:04:51,058
+even, you know, sort of
+national politicos
+
+100
+00:04:51,124 --> 00:04:52,693
+recognize that the
+Wisconsin governor's race
+
+101
+00:04:52,759 --> 00:04:56,530
+is important. Democrats are
+also trying to flip
+
+102
+00:04:56,597 --> 00:04:59,032
+Congress. And so, you know,
+I went and looked at a
+
+103
+00:04:59,099 --> 00:05:01,335
+number of the kind of big
+Democratic mega donors who
+
+104
+00:05:01,401 --> 00:05:04,238
+often try to put money in
+Wisconsin state elections,
+
+105
+00:05:04,304 --> 00:05:06,139
+and they're still spending
+money this year, but
+
+106
+00:05:06,206 --> 00:05:08,475
+they're spending it on
+congressional races in
+
+107
+00:05:08,542 --> 00:05:11,111
+other states. So we're
+seeing much less of their
+
+108
+00:05:11,178 --> 00:05:12,746
+money come through the
+Democratic Party. And
+
+109
+00:05:12,813 --> 00:05:15,249
+that's why I think, you
+know, the combination of
+
+110
+00:05:15,315 --> 00:05:17,451
+huge spending from
+Republicans and then some
+
+111
+00:05:17,518 --> 00:05:19,419
+amount of kind of taking
+their foot off the gas from
+
+112
+00:05:19,486 --> 00:05:22,489
+Democrats shows that big
+split.
+
+113
+00:05:22,556 --> 00:05:25,526
+>> Zac, you know, I kind of
+got a theory in politics
+
+114
+00:05:25,592 --> 00:05:28,695
+that when you see these big
+donors put a lot of money
+
+115
+00:05:28,762 --> 00:05:31,498
+into a race like ours, like
+the race for governor, they
+
+116
+00:05:31,565 --> 00:05:33,734
+feel like they have a
+chance at getting something
+
+117
+00:05:33,800 --> 00:05:35,936
+that they want, right? That
+they they feel like they
+
+118
+00:05:36,003 --> 00:05:39,406
+have a chance of winning. I
+mean, is it fair to, to say
+
+119
+00:05:39,473 --> 00:05:41,608
+that Republicans are
+looking at Wisconsin is
+
+120
+00:05:41,675 --> 00:05:45,546
+maybe friendly ground in an
+unfriendly environment?
+
+121
+00:05:45,612 --> 00:05:47,681
+>> It's interesting because
+you have to look at both
+
+122
+00:05:47,748 --> 00:05:49,683
+the national environment
+and the state environment
+
+123
+00:05:49,750 --> 00:05:51,752
+to realize there is a
+difference in what we're
+
+124
+00:05:51,818 --> 00:05:55,389
+seeing out of the Midwest
+and Northern American races
+
+125
+00:05:55,455 --> 00:05:58,058
+in Minnesota, tightening up
+Wisconsin is always tight.
+
+126
+00:05:58,125 --> 00:06:00,727
+Michigan Senate, the
+polling out of Maine Senate
+
+127
+00:06:00,794 --> 00:06:03,030
+being a lot tighter, which
+is the opposite of what
+
+128
+00:06:03,096 --> 00:06:05,899
+we're hearing out of the
+South, which is, you know,
+
+129
+00:06:05,966 --> 00:06:09,203
+Texas Democrats doing well
+in Kansas, Senate race
+
+130
+00:06:09,269 --> 00:06:11,505
+being competitive and these
+things that we really
+
+131
+00:06:11,572 --> 00:06:13,674
+hadn't heard of and kind of
+expanding of what Arnie was
+
+132
+00:06:13,740 --> 00:06:16,476
+talking about. The map is
+so large that these
+
+133
+00:06:16,543 --> 00:06:19,012
+Democratic national donors
+are being pulled in a lot
+
+134
+00:06:19,079 --> 00:06:21,114
+of different directions.
+Whereas in the past, Ben
+
+135
+00:06:21,181 --> 00:06:24,618
+Wikler could say, hey,
+support Tony Evers to
+
+136
+00:06:24,685 --> 00:06:26,820
+protect Wisconsin's
+electoral votes in the
+
+137
+00:06:26,887 --> 00:06:29,823
+presidential election,
+protect the Assembly so
+
+138
+00:06:29,890 --> 00:06:32,626
+that Tony Evers veto still
+matters when it comes to
+
+139
+00:06:32,693 --> 00:06:35,596
+drawing these maps. Invest
+in our our Supreme Court
+
+140
+00:06:35,662 --> 00:06:38,765
+races so we can redraw
+these maps and declare what
+
+141
+00:06:38,832 --> 00:06:41,001
+gerrymandering is. That
+argument has already been
+
+142
+00:06:41,068 --> 00:06:43,537
+won. And so every investor
+needs a new argument of why
+
+143
+00:06:43,604 --> 00:06:46,206
+they need to invest. And it
+may be that some of them
+
+144
+00:06:46,273 --> 00:06:48,442
+are just looking in
+different directions and
+
+145
+00:06:48,509 --> 00:06:51,144
+getting maybe greedy from a
+Democratic point of view of,
+
+146
+00:06:51,211 --> 00:06:53,747
+hey, where else can we win?
+Forgetting that Wisconsin
+
+147
+00:06:53,814 --> 00:06:56,083
+still competitive, this
+race will be closer than
+
+148
+00:06:56,149 --> 00:06:58,719
+some of those other races
+where they are investing
+
+149
+00:06:58,785 --> 00:07:02,890
+millions and neglecting the
+Democrats here. And I think
+
+150
+00:07:02,956 --> 00:07:06,093
+you also have to look at
+what does it matter for the
+
+151
+00:07:06,159 --> 00:07:09,396
+Assembly? Because if we're
+talking about the state
+
+152
+00:07:09,463 --> 00:07:11,498
+Senate being more likely to
+flip to Democrats because
+
+153
+00:07:11,565 --> 00:07:14,301
+they only need to win a
+couple seats, and one of
+
+154
+00:07:14,368 --> 00:07:16,470
+them looks pretty solid,
+and they've got a couple
+
+155
+00:07:16,537 --> 00:07:18,238
+good battleground options.
+And if they think they're
+
+156
+00:07:18,305 --> 00:07:20,240
+going to lose the
+Democratic race for
+
+157
+00:07:20,307 --> 00:07:22,976
+governor because they have
+this national wave
+
+158
+00:07:23,043 --> 00:07:25,779
+overtaking Tom Tiffany's
+ability to compete there,
+
+159
+00:07:25,846 --> 00:07:28,115
+backstop is the assembly
+where they're very
+
+160
+00:07:28,182 --> 00:07:30,551
+localized races. They only
+have to win a handful of
+
+161
+00:07:30,617 --> 00:07:33,587
+these seats to stop the
+Democrats from doing
+
+162
+00:07:33,654 --> 00:07:35,956
+anything they want in the
+next session if they hold
+
+163
+00:07:36,023 --> 00:07:38,125
+the Assembly. So that's
+worth pouring all these
+
+164
+00:07:38,192 --> 00:07:40,327
+millions into. And that's
+originally where these
+
+165
+00:07:40,394 --> 00:07:42,863
+billionaires were dumping
+their money was into the
+
+166
+00:07:42,930 --> 00:07:46,466
+Republican Assembly. PACs
+and all their money. So
+
+167
+00:07:46,533 --> 00:07:49,136
+it's they're also expanding
+their own map as they're
+
+168
+00:07:49,203 --> 00:07:51,104
+saying, hey, maybe, maybe
+Tom Tiffany does have a
+
+169
+00:07:51,171 --> 00:07:54,107
+legitimate chance to win,
+even in this environment.
+
+170
+00:07:54,174 --> 00:07:57,277
+>> You know, when I look at
+this big financial push for
+
+171
+00:07:57,344 --> 00:08:00,447
+conservatives here, I can't
+help but think about the
+
+172
+00:08:00,514 --> 00:08:03,016
+2010 election cycle a
+little bit, because I
+
+173
+00:08:03,083 --> 00:08:05,185
+remember that year, there
+was a lot of talk in the
+
+174
+00:08:05,252 --> 00:08:07,788
+closing days of the
+election that unions were
+
+175
+00:08:07,855 --> 00:08:09,957
+the big spenders in that
+year's elections. They were
+
+176
+00:08:10,023 --> 00:08:14,361
+the big dogs in in that
+year's fight. And we kind
+
+177
+00:08:15,095 --> 00:08:17,264
+of remember how that turned
+out. It was pretty much the
+
+178
+00:08:17,331 --> 00:08:21,001
+worst year for Democrats
+ever, basically, or at
+
+179
+00:08:21,068 --> 00:08:23,337
+least since we've been
+covering politics. Zac, one
+
+180
+00:08:23,403 --> 00:08:26,006
+of the most consequential
+wave elections that we have
+
+181
+00:08:26,073 --> 00:08:28,509
+covered. And so it doesn't
+always work when you pour
+
+182
+00:08:28,575 --> 00:08:31,211
+money into a race. On the
+other hand, David Crowley
+
+183
+00:08:31,278 --> 00:08:34,248
+is not a well-known
+household name in Wisconsin.
+
+184
+00:08:34,314 --> 00:08:38,719
+And so when Tom Tiffany can
+go out and kind of define
+
+185
+00:08:38,785 --> 00:08:41,855
+him, there's an argument to
+be made that that money
+
+186
+00:08:41,922 --> 00:08:44,691
+gets more bang for the buck.
+You've talked to both of
+
+187
+00:08:44,758 --> 00:08:47,694
+the candidates very
+recently, David Crowley and
+
+188
+00:08:47,761 --> 00:08:52,399
+Tom Tiffany, and you get a
+sense that an issue, gas
+
+189
+00:08:52,466 --> 00:08:56,036
+prices specifically could
+become front and center in
+
+190
+00:08:56,103 --> 00:08:58,405
+this race for governor. How
+are they talking about it
+
+191
+00:08:58,472 --> 00:08:59,410
+and why now?
+
+192
+00:08:59,410 --> 00:09:01,441
+>> Why now is because they
+
+193
+00:09:01,508 --> 00:09:03,877
+keep skyrocketing. Anyone
+who has to regularly drive
+
+194
+00:09:03,944 --> 00:09:06,246
+anywhere knows that gas
+prices are only going up.
+
+195
+00:09:06,313 --> 00:09:08,582
+It's becoming a bigger
+issue with diesel,
+
+196
+00:09:08,649 --> 00:09:10,517
+specifically because that's
+rising at an even faster
+
+197
+00:09:10,584 --> 00:09:13,187
+rate. So if you have a
+diesel truck or you have
+
+198
+00:09:13,253 --> 00:09:16,089
+any connection to truckers
+that need to bring supplies
+
+199
+00:09:16,156 --> 00:09:19,259
+to your business, or
+farmers having to worry
+
+200
+00:09:19,326 --> 00:09:21,795
+about harvesting crops or
+paying for fertilizer,
+
+201
+00:09:21,862 --> 00:09:24,064
+which also deals with
+diesel and other fuel and
+
+202
+00:09:24,131 --> 00:09:27,501
+oil related subsidies.
+There's all sorts of issues
+
+203
+00:09:27,568 --> 00:09:30,437
+that are really making this
+the highest profile, but I
+
+204
+00:09:30,504 --> 00:09:33,173
+think the true answer to
+that is you have to go
+
+205
+00:09:33,240 --> 00:09:35,342
+beyond maybe the people
+that watch us program, and
+
+206
+00:09:35,409 --> 00:09:37,945
+it's the nonpolitically
+invested people. When do
+
+207
+00:09:38,011 --> 00:09:40,881
+they tune into elections
+when it affects them
+
+208
+00:09:40,948 --> 00:09:43,550
+personally and they can
+feel it. I've spoken to so
+
+209
+00:09:43,617 --> 00:09:46,086
+many people, some in my own
+family, who absolutely hate
+
+210
+00:09:46,153 --> 00:09:48,155
+politics. They don't want
+anything to do with it.
+
+211
+00:09:48,222 --> 00:09:51,158
+They don't want to talk
+about it. But when gas goes
+
+212
+00:09:51,225 --> 00:09:53,994
+up, when eggs go up, when
+beef goes up, when they can
+
+213
+00:09:54,061 --> 00:09:56,196
+feel it and see it
+everywhere, they say, why
+
+214
+00:09:56,263 --> 00:09:59,132
+is this happening? And who
+can I blame? Which is why
+
+215
+00:09:59,199 --> 00:10:01,368
+in 2022, when we saw gas
+prices surge, they blamed
+
+216
+00:10:01,435 --> 00:10:04,037
+Biden. Biden can have all
+the answers in the world
+
+217
+00:10:04,104 --> 00:10:06,206
+about why it was
+international. It wasn't
+
+218
+00:10:06,273 --> 00:10:08,542
+his fault. Same thing's
+happening now. It's whoever
+
+219
+00:10:08,609 --> 00:10:11,345
+is in charge is going to
+get blamed when prices
+
+220
+00:10:11,411 --> 00:10:13,614
+surge, no matter what the
+nuance in an answer is. And
+
+221
+00:10:13,680 --> 00:10:16,316
+these these are voters that
+don't look at political
+
+222
+00:10:16,383 --> 00:10:18,418
+nuance. They don't want to
+spend 30 minutes hearing
+
+223
+00:10:18,485 --> 00:10:20,621
+about global supply chains
+or foreign conflicts. They
+
+224
+00:10:20,687 --> 00:10:23,290
+want to know, why is it so
+expensive for me to fill up
+
+225
+00:10:23,357 --> 00:10:24,132
+my truck.
+
+226
+00:10:24,132 --> 00:10:26,026
+>> And I mean, in this
+
+227
+00:10:26,093 --> 00:10:28,962
+particular election, we do
+have I think Democrats have
+
+228
+00:10:29,029 --> 00:10:31,965
+a decent cause effect case
+to be made here.
+
+229
+00:10:32,032 --> 00:10:33,402
+>> The straight line.
+
+---
+
+## Style Rules (authoritative)
+
+These values are computed and enforced by the pipeline — they override anything else in this prompt.
+
+**Proper nouns (authoritative spellings — use exactly these):** Shawn Johnson, Johnson, Rich Kremer, Kremer, Zac Schultz, Schultz
+**Speaker labels:** **First Last:** — bold, first + last name, colon inside the bold; 2 trailing spaces after the colon; exactly 1 blank line between speaker turns; no honorifics in labels.
+**Write it right the first time:** OK (never okay); partisan (never partizan); Marquette Poll (never marquette poll); Sen. (never Senator); Rep. (never Representative); Gov. (never Governor); Pres. (never President); Atty. Gen. (never Attorney General); liberals (never Liberals); liberal (never Liberal); conservatives (never Conservatives); conservative (never Conservative); strips markdown italics around known program names; replace is a backreference to the matched name.
+**Review notes:** place at the top of the document, formatted as an html comment.

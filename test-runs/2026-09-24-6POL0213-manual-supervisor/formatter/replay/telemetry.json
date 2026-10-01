@@ -1,0 +1,19 @@
+{
+  "reasoning_tokens": 0,
+  "content_tokens": 6023,
+  "content_tokens_per_content_word": 1.801,
+  "model_requested": "anthropic/claude-sonnet-5",
+  "model_actual": "anthropic/claude-sonnet-5",
+  "provider": "Amazon Bedrock",
+  "finish_reason": "stop",
+  "native_finish_reason": "end_turn",
+  "prompt_tokens": 32816,
+  "completion_tokens": 6023,
+  "cost_usd": 0.125862,
+  "elapsed_s": 56.5,
+  "max_tokens_sent": 16384,
+  "output_content_words": 3344,
+  "tokens_per_content_word": 1.801,
+  "raw_output_words": 3361,
+  "tokens_per_raw_word": 1.792
+}
