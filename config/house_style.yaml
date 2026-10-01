@@ -383,13 +383,23 @@ prompt_blocks:
       - Output is structured and complete (not truncated)
 
       ### Formatter Phase
-      - No review notes, agent instructions, or metadata appear in the transcript body
+      - Review notes are a defect ONLY when inline among dialogue or appended at the end.
+      - A `<!-- REVIEW NOTES: ... -->` block immediately after the metadata header is required
+        by the formatter contract — never flag its placement or presence as a problem.
+      - The closing `**Status:**` footer is required contract structure, not stray metadata.
+      - `**Status:** needs_review` is not a validation failure — it is the formatter correctly
+        asking for a human check. Judge the transcript itself and pass it if it is sound.
+      - No agent instructions or scratch work appear in the transcript body
       - Speaker labels are consistent throughout (same speaker isn't labeled differently)
       - No content appears past the actual episode duration
       - Paragraphs and sections are properly formatted
       - No obvious truncation (content doesn't end abruptly mid-sentence)
 
       ### SEO Phase
+      Judge ONLY the final recommended value for each field. SEO reports often show their
+      revision history (e.g. a draft marked "109 characters — revision required" followed by a
+      corrected one); superseded drafts are working notes, not deliverables, and must never be
+      flagged. Sections the report marks "(Optional)" or leaves unfilled are not defects either.
       - Title is under 80 characters
       - Short description is under 90 characters
       - Long description is under 350 characters
@@ -399,9 +409,15 @@ prompt_blocks:
       ### Semantic accuracy
       - Title accurately reflects content
       - Description accurately reflects content
+
+      ### Factual consistency with SST (only when SST context is provided)
+      - Names, ensembles, organizations, dates and roles in the outputs are consistent with the SST context where it speaks to them
+      - Facts that appear in the SST context are grounded — do NOT flag them as fabricated merely because they are absent from the transcript or analyst output
+      - The formatter's **Program:** header matches the SST program when one is given (SST is authoritative)
     slim: |
       - Title accurately reflects content
       - Description accurately reflects content
+      - When SST context is provided: names, ensembles, dates and roles are consistent with it where it speaks to them; SST-sourced facts are grounded, not fabrications; SST is authoritative for the **Program:** header
 
       All mechanical checks (character limits, formatting, placeholders, truncation, speaker labels) run deterministically in the pipeline and are merged into your verdict — do NOT re-check them; judge only the semantic accuracy items above.
   "formatter.house_rules":

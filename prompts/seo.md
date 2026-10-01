@@ -149,18 +149,20 @@ person, no "we"/"our", no calls to action. Name the key people/topics specifical
 
 ### YouTube Tags (15-20 recommended)
 
-```
+**Tags (paste-ready):**
 [primary keyword], [secondary keyword], [program name], Wisconsin, PBS Wisconsin, [topic], [subtopic], [location], [related term], [related term]
-```
+
+Emit the tag list as a plain paragraph on its own line, exactly as above. Do NOT wrap it in a code fence (```) or backticks — this value gets pasted verbatim into the AirTable `General Keywords/Tags` field, and a pasted fence corrupts the first and last keywords while rendering invisibly in richText fields (#380).
 
 **Reasoning:**
 [Explain tag selection strategy: mix of high-volume, low-competition, and branded terms]
 
 ### Social Media Hashtags (5-10 recommended)
 
-```
+**Hashtags (paste-ready):**
 #[PrimaryTopic] #Wisconsin #[ProgramName] #[Subtopic] #[LocationSpecific]
-```
+
+Same rule: plain paragraph, no code fence — this value is pasted into richText fields.
 
 **Usage Notes:**
 [Platform-specific recommendations: Twitter vs Instagram vs Facebook]
