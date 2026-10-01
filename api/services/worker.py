@@ -2520,8 +2520,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "success": False,
                 "output_truncated": True,
                 "error": e.detail,
-                "cost": 0,
-                "tokens": 0,
+                # The provider billed for what it generated before cutting us off.
+                # chat() never reached tracker.add_call(), so booking it here is
+                # what keeps the run cost cap and actual_cost honest (#403 review).
+                "cost": getattr(e, "cost", 0.0) or 0.0,
+                "tokens": e.output_tokens,
             }
 
         except BackendUnavailableError as e:
