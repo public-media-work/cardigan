@@ -6,6 +6,7 @@ from api.services.chunking import (
     _split_into_turns,
     _split_plain_text,
     _split_srt,
+    format_duration,
     merge_formatter_chunks,
     split_transcript,
 )
@@ -369,6 +370,126 @@ Second body."""
         assert "Here is the second chunk" not in result
         assert "Dialogue" in result
         assert "More dialogue" in result
+
+
+# ─── deterministic wrapper (FMT-1) ────────────────────────────────────
+
+# Job 24 (6POL0214): chunk 0 saw only its own slice and wrote the duration of
+# that slice -- 00:11:06 for an 18.6-minute episode.
+_JOB24_CHUNK0 = """# Formatted Transcript
+**Project:** 6POL0214
+**Program:** Inside Wisconsin Politics
+**Duration:** 00:11:06
+**Date Processed:** 2026-10-01
+
+<!-- REVIEW NOTES:
+- "Colombo Channel" (5:00-5:05): unclear reference.
+-->
+
+---
+
+**Narrator:**
+This is Inside Wisconsin Politics."""
+
+_JOB24_CHUNK1 = """**Zac Schultz:**
+That's all the time we've got.
+
+**Status:** needs_review"""
+
+_AUTHORITATIVE = {
+    "Project": "6POL0214",
+    "Program": "Inside Wisconsin Politics",
+    "Duration": "00:18:37",
+    "Date Processed": "2026-10-02",
+}
+
+
+class TestFormatDuration:
+    def test_job24_duration(self):
+        assert format_duration(18.622516666666666) == "00:18:37"
+
+    def test_over_an_hour(self):
+        assert format_duration(61.5) == "01:01:30"
+
+    def test_missing_or_invalid(self):
+        assert format_duration(None) is None
+        assert format_duration(0) is None
+        assert format_duration("n/a") is None
+
+
+class TestDeterministicWrapper:
+    def test_header_values_come_from_metadata_not_chunk0(self):
+        result = merge_formatter_chunks([_JOB24_CHUNK0, _JOB24_CHUNK1], header_fields=_AUTHORITATIVE)
+        assert "**Duration:** 00:18:37" in result
+        assert "00:11:06" not in result
+        assert "**Date Processed:** 2026-10-02" in result
+        assert result.count("**Project:**") == 1
+        assert result.startswith("# Formatted Transcript\n**Project:** 6POL0214\n")
+
+    def test_contract_form_review_notes_survive_header_replacement(self):
+        result = merge_formatter_chunks([_JOB24_CHUNK0, _JOB24_CHUNK1], header_fields=_AUTHORITATIVE)
+        assert "Colombo Channel" in result
+        # Notes sit between the header and the first rule, in the contract form.
+        first_rule = result.index("\n---\n")
+        assert result.index("<!-- REVIEW NOTES:") < first_rule
+        assert result.index("Colombo Channel") < first_rule
+
+    def test_contract_form_notes_in_later_chunk_move_to_top(self):
+        chunk1 = "<!-- REVIEW NOTES:\n- Spelling check: Tiffany\n-->\n\n" + _JOB24_CHUNK1
+        result = merge_formatter_chunks([_JOB24_CHUNK0, chunk1], header_fields=_AUTHORITATIVE)
+        first_rule = result.index("\n---\n")
+        assert result.index("Spelling check: Tiffany") < first_rule
+        assert result.count("<!-- REVIEW NOTES") == 1
+
+    def test_missing_value_falls_back_to_model_header(self):
+        fields = dict(_AUTHORITATIVE, Program=None)
+        result = merge_formatter_chunks([_JOB24_CHUNK0, _JOB24_CHUNK1], header_fields=fields)
+        assert "**Program:** Inside Wisconsin Politics" in result
+        assert "**Duration:** 00:18:37" in result
+
+    def test_missing_duration_is_omitted_not_taken_from_chunk0(self):
+        fields = dict(_AUTHORITATIVE, Duration=None)
+        result = merge_formatter_chunks([_JOB24_CHUNK0, _JOB24_CHUNK1], header_fields=fields)
+        assert "**Duration:**" not in result
+        assert "00:11:06" not in result
+
+    def test_contract_notes_stripped_from_body_without_header_fields(self):
+        """The merge's notes regex never matched the contract form, so notes
+        written mid-body by chunk 1+ stayed there -- the validator's
+        "review notes appear in transcript body" flag."""
+        chunk1 = (
+            "**Zac Schultz:**\nOne.\n\n<!-- REVIEW NOTES:\n- Spelling check: Tiffany\n-->\n\n**Zac Schultz:**\nTwo."
+        )
+        result = merge_formatter_chunks([_JOB24_CHUNK0, chunk1])
+        first_rule = result.index("\n---\n")
+        assert result.index("Spelling check: Tiffany") < first_rule
+        assert result.count("<!-- REVIEW NOTES") == 1
+        assert "One." in result and "Two." in result
+
+    def test_header_written_even_when_chunk0_omits_it(self):
+        chunk0 = "**Narrator:**\nThis is Inside Wisconsin Politics."
+        result = merge_formatter_chunks([chunk0, _JOB24_CHUNK1], header_fields=_AUTHORITATIVE)
+        assert result.startswith("# Formatted Transcript\n**Project:** 6POL0214")
+        assert "**Duration:** 00:18:37" in result
+        assert "This is Inside Wisconsin Politics." in result
+
+    def test_header_without_rule_is_not_duplicated(self):
+        chunk0 = "# Formatted Transcript\n**Project:** 6POL0214\n**Duration:** 00:11:06\n\n**Narrator:**\nHello."
+        result = merge_formatter_chunks([chunk0, _JOB24_CHUNK1], header_fields=_AUTHORITATIVE)
+        assert result.count("**Project:**") == 1
+        assert result.count("# Formatted Transcript") == 1
+        assert "00:11:06" not in result
+        assert "Hello." in result
+
+    def test_status_footer_still_from_last_chunk(self):
+        result = merge_formatter_chunks([_JOB24_CHUNK0, _JOB24_CHUNK1], header_fields=_AUTHORITATIVE)
+        assert result.strip().endswith("**Status:** needs_review")
+        assert result.count("**Status:**") == 1
+
+    def test_dialogue_preserved(self):
+        result = merge_formatter_chunks([_JOB24_CHUNK0, _JOB24_CHUNK1], header_fields=_AUTHORITATIVE)
+        assert "This is Inside Wisconsin Politics." in result
+        assert "That's all the time we've got." in result
 
 
 # ─── turn-boundary split tests ────────────────────────────────────────

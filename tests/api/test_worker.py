@@ -5,6 +5,7 @@ and recovery analysis.
 """
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -1217,3 +1218,39 @@ class TestRetryContextSection:
 
     def test_empty_without_retry_context(self):
         assert self._worker()._retry_context_section({}) == ""
+
+
+class TestChunkHeaderFields:
+    """FMT-1: chunk 0 sees only its own slice, so the header it writes carries
+    that slice's duration -- job 24 (6POL0214) said 00:11:06 for an 18:37
+    episode. The merge writes the header from these values instead."""
+
+    _SRT = "1\n00:00:00,000 --> 00:00:04,000\nHello.\n\n2\n00:18:33,000 --> 00:18:37,351\nGoodbye.\n"
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_values_from_metadata(self):
+        fields = self._worker()._chunk_header_fields(
+            {
+                "project_name": "6POL0214",
+                "transcript_file": "6POL0214.srt",
+                "transcript": self._SRT,
+                "sst_context": {"program": "Inside Wisconsin Politics"},
+            }
+        )
+        assert fields["Project"] == "6POL0214"
+        assert fields["Program"] == "Inside Wisconsin Politics"
+        assert fields["Duration"] == "00:18:37"
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields["Date Processed"])
+
+    def test_no_duration_without_srt(self):
+        """A plain-text transcript has no timecodes; a word-count estimate is
+        not a duration, so the field is left for the merge to omit."""
+        fields = self._worker()._chunk_header_fields(
+            {"project_name": "X", "transcript_file": "x.txt", "transcript": "Hello."}
+        )
+        assert fields["Duration"] is None
+        assert fields["Program"] is None

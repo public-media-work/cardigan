@@ -308,18 +308,57 @@ def split_transcript(
     return chunks
 
 
-def merge_formatter_chunks(chunks: List[str]) -> str:
+# The formatter contract's header fields, in the order prompts/formatter.md
+# writes them.
+HEADER_FIELDS = ("Project", "Program", "Duration", "Date Processed")
+
+_HEADER_LINE_RE = re.compile(r"^\*\*(Project|Program|Duration|Date Processed):\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+
+# Review notes come in two forms. The contract (prompts/formatter.md) only
+# ever asks for ``<!-- REVIEW NOTES: ... -->`` -- one comment, closed by the
+# first ``-->``. The legacy arrow form ``<!-- REVIEW NOTES -->`` followed by
+# loose text (optionally closed by ``<!-- /REVIEW NOTES -->``) is what this
+# merge used to read and write; real formatter output never used it, so the
+# contract form went unrecognised and its notes stayed in chunk bodies.
+# Strip the arrow form first: the contract pattern would also match its
+# opening comment as an empty block.
+_ARROW_NOTES_RE = re.compile(r"<!--\s*REVIEW NOTES\s*-->(.*?)(?=<!--|$)", re.DOTALL | re.IGNORECASE)
+_ARROW_NOTES_CLOSE_RE = re.compile(r"<!--\s*/REVIEW NOTES\s*-->", re.IGNORECASE)
+_CONTRACT_NOTES_RE = re.compile(r"<!--\s*REVIEW NOTES\b[^\n]*?:?[ \t]*\n?(.*?)-->", re.DOTALL | re.IGNORECASE)
+
+
+def format_duration(minutes) -> Optional[str]:
+    """Render a duration in minutes as the header's ``HH:MM:SS``, or None."""
+    try:
+        total = round(float(minutes) * 60)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def merge_formatter_chunks(chunks: List[str], header_fields: Optional[Dict[str, Optional[str]]] = None) -> str:
     """Merge formatted chunk outputs into a single document.
 
-    1. Keep header (before first ---) from chunk 0 only
+    1. Keep header (before first ---) from chunk 0 only -- or, when
+       ``header_fields`` is given, write the header from it and discard the
+       model-written one
     2. Strip headers from chunks 1+
     3. Strip Status line from all but last chunk
     4. Collect review notes into one block at top
     5. Deduplicate overlap at chunk seams
     6. Concatenate
 
+    ``header_fields`` maps the contract's header names (``HEADER_FIELDS``) to
+    authoritative values from job metadata (FMT-1). Chunk 0 only sees its own
+    slice of the transcript, so it cannot know the episode's duration -- job 24
+    reported 00:11:06 for an 18.6-minute episode. A field whose value is None
+    falls back to whatever chunk 0 wrote for it.
+
     Args:
         chunks: List of formatted output strings, one per chunk
+        header_fields: Authoritative header values, or None to keep chunk 0's
 
     Returns:
         Merged formatter output
@@ -331,7 +370,6 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
 
     # Extract all review notes
     review_notes: List[str] = []
-    review_pattern = re.compile(r"<!--\s*REVIEW NOTES\s*-->.*?(?=<!--|$)", re.DOTALL | re.IGNORECASE)
 
     # Process each chunk
     header = ""
@@ -375,14 +413,16 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
         # Clean up orphaned --- separators left after attribution removal
         chunk = re.sub(r"\n---+\s*\n*$", "", chunk.strip())
 
-        # Extract review notes from this chunk
-        notes = review_pattern.findall(chunk)
-        for note in notes:
-            note = note.strip()
-            if note and note not in review_notes:
-                review_notes.append(note)
-        # Remove review notes from chunk body
-        chunk = review_pattern.sub("", chunk).strip()
+        # Lift review notes out of every chunk, line by line (seam overlap can
+        # repeat a note), so none is left in a body or dropped with chunk 0's
+        # header when header_fields replaces it.
+        for block in _ARROW_NOTES_RE.findall(chunk) + _CONTRACT_NOTES_RE.findall(chunk):
+            for line in block.splitlines():
+                line = line.strip()
+                if line and line not in review_notes:
+                    review_notes.append(line)
+        chunk = _CONTRACT_NOTES_RE.sub("", _ARROW_NOTES_RE.sub("", chunk))
+        chunk = _ARROW_NOTES_CLOSE_RE.sub("", chunk).strip()
 
         if i == 0:
             # First chunk: extract header (everything before first ---)
@@ -392,6 +432,12 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
                 body = parts[1].strip()
             else:
                 body = chunk
+                if header_fields is not None:
+                    # No rule to split on: lift any header lines out of the
+                    # body so the deterministic header is the only one.
+                    header = "\n".join(m.group(0) for m in _HEADER_LINE_RE.finditer(body))
+                    body = re.sub(r"^#\s+Formatted Transcript\s*\n?", "", body, flags=re.MULTILINE)
+                    body = _HEADER_LINE_RE.sub("", body).strip()
         else:
             # Subsequent chunks: strip any generated header
             body = chunk
@@ -422,16 +468,28 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
     for i in range(len(bodies) - 1):
         bodies[i + 1] = _dedup_seam_turns(bodies[i], bodies[i + 1])
 
+    if header_fields is not None:
+        model_values = dict(_HEADER_LINE_RE.findall(header))
+        lines = ["# Formatted Transcript"]
+        for name in HEADER_FIELDS:
+            value = header_fields.get(name)
+            if not value and name != "Duration":
+                # Duration never falls back: chunk 0 cannot see the whole
+                # episode, so its value is a confident wrong one. Omit it.
+                value = model_values.get(name)
+            if value:
+                lines.append(f"**{name}:** {value}")
+        header = "\n".join(lines)
+
     # Build final document
     parts = []
 
     if header:
         parts.append(header)
 
-    # Add consolidated review notes
+    # Add consolidated review notes, in the contract's own form
     if review_notes:
-        notes_block = "<!-- REVIEW NOTES -->\n" + "\n".join(review_notes) + "\n<!-- /REVIEW NOTES -->"
-        parts.append(notes_block)
+        parts.append("<!-- REVIEW NOTES:\n" + "\n".join(review_notes) + "\n-->")
 
     if header or review_notes:
         parts.append("---")
