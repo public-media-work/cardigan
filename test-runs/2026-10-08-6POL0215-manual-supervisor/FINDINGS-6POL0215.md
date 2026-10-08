@@ -1,0 +1,83 @@
+# Cardigan pipeline: manual supervisor run of 6POL0215 — findings
+
+Date: 2026-10-08. Transcript: Inside Wisconsin Politics 6POL0215, 18:52, 382 captions, 3,477 dialogue words. The SST record was present (Host/Presenter/Keywords empty).
+
+**Code under test (the "stack"):** `origin/main` dc7bbea plus the five open hotfix PRs, merged locally on a branch that was never pushed: #409, #412, #413, #421, #422. For comparison, the same gates were also run against plain `origin/main`. Every prompt was *captured* from the worker's own `_run_phase` / `_run_formatter_chunked`, with `llm.chat` replaced by a recorder, so nothing in the prompts was re-implemented. Every gate is the worker's own gate code. Model calls went to local Claude subagents at prod's tiers: Haiku for analyst and validator, Sonnet for formatter, SEO and timestamp. There were no OpenRouter calls, so this run has no `finish_reason` or reasoning telemetry. The chronological log is `RUNLOG.md`.
+
+## 1. Bottom line
+
+**On the stack, 6POL0215 completes unassisted.** Every deterministic gate passes, the validator returns `overall: pass`, and `_finalize_with_qa_gate` returns `completed` with no escalation and no supervisor intervention. 6POL0213 would have paused three times on main as of 2026-09-24. For comparison:
+
+| Step | 6POL0213 on main (2026-09-24) | 6POL0215 on stack (today) |
+|---|---|---|
+| Formatter path | 2 chunks; header + Status dropped (FMT-1) | single call (#409); header + Status present; 99.2% coverage |
+| SEO | Haiku; all three fields over limit; drafting trail (SEO-1/2) | Sonnet (#422); 67 / 84 / 275 chars, no trail |
+| Validator | fail → misrouted `[qa_review]` (QA-1, VAL-1) | pass (with either prompt, see §3) |
+| Outcome | paused | **completed** |
+
+That pass is real but **thinner than it looks**:
+
+1. **The output still needs a human, and the job completes anyway.** The formatter set `Status: needs_review` with an accurate review note: the 17:41 turn "And Shawn, we should mention…" is genuinely ambiguous between Zac and Rich. SEO then set `Status: draft` *because* the formatter was unsure. The job completes because the validator chose not to fail it. That is GATE-1, the v-next product question of whether formatter uncertainty pauses the job or rides along as an item flag. It has been decided by Haiku's reading of one prompt sentence rather than by policy.
+2. **Nothing checks fidelity.** The formatter rewrote a Tiffany attack ad's "An illegal tied up…" as "An illegal immigrant tied up…" and called it a caption repair (FMT-2). The validator never receives the source transcript (VAL-3), and the completeness/seam gates count words. An *added* or *substituted* word is invisible to every check in the pipeline.
+3. **The pass did not come from #412's validator wording.** Main's (pre-#412) validator prompt also passed these exact outputs. On this job, the difference from 6POL0213 is upstream: a single-call formatter (#409) and Sonnet SEO (#422).
+
+A supplementary run forced the chunked path on the stack, to exercise #413/#421 on real output (§4). #421's computed header works. Chunk 0 still writes a false "duration unknown / section 1 of 2" review note and sets `needs_review` partly *because of it*, so the chunk wrapper itself still manufactures GATE-1 markers.
+
+## 2. Defects found
+
+Severity: **P0** blocks completion on typical input; **P1** corrupts output or misleads operators; **P2** quality/robustness. Tier: **hotfix** = prompt/config/one-function change; **v-next** = needs design.
+
+| ID | Sev | Tier | Where | What | Fix |
+|---|---|---|---|---|---|
+| **FMT-2** | P1 | hotfix (prompt) + v-next (check) | `prompts/formatter.md` reconstruction licence; chunk/single user prompts ("include your best reconstruction") | The formatter edits intelligible speech under the banner of caption repair. In a quoted **political ad** it turned "An illegal tied up" into "An illegal immigrant tied up", softening the ad's own wording. On the chunked path it deleted "David Crowley" from the ad title "David Crowley: I'm an Accomplice" as a "caption artifact" (the single-call run kept it). Other examples: "They're going to be" → "There's going to be", "Marquette polling" → "the Marquette Poll", "knowingly, involuntarily, voluntarily" → "knowingly, voluntarily". | Prompt: reconstruction is only for captions that are *unintelligible*. Never add, remove or substitute words in quoted ads, clips or read-outs, and grammatical-but-unusual is not garbled. Deterministic check (v-next): diff the formatter's words against the SRT's words. Insertions and deletions outside filler/stutter lists become item flags. |
+| **VAL-3** | P1 | v-next | validator user prompt | The validator gets SST + analyst + formatted transcript + SEO, but **no source**, so it cannot judge fidelity or attribution. It "verifies" the formatter against the analyst's summary, which is itself inference. | Don't ask an LLM for this. Use the deterministic word diff above, and give the validator the diff's findings as input. |
+| **ESC-1** | P1 | hotfix | `worker.py` `_finalize_with_qa_gate` (stack :1665–1684) | Auto-escalation re-runs flagged phases with the original context. It never sets `_validation_flags` / `_previous_output` (only `retry_phase` does, :510–533). #413's `_retry_context_section` therefore fixes *operator* retries of chunked jobs, but the automatic QA escalation is still a blind re-run on both paths. This is the half of 6POL0213's RETRY-1 that is still open. | Before the escalation loop, set `context["_validation_flags"]` per phase from `validation_result["phase_results"][phase]["flags"]`, then clear it after. Add a test that asserts the escalated prompt contains the flag text. |
+| **FMT-3** | P1 | hotfix | `worker.py` `_chunk_wrapper_instructions` (#413) and `chunking.merge_formatter_chunks` (#421) | Forced-chunk run: chunk 0 wrote `Duration: Not yet determinable…`, which #421 correctly overwrote. But chunk 0 also wrote a review note "Duration is unknown because this is section 1 of 2…" that survives into the merged notes and contradicts the header. That puts "section 1 of" back in the deliverable. It also gave "unknown duration" as a reason for `needs_review`, and wrote its own mid-document `---` + Status footer, whose `---` survives the merge. | Chunk-0 wrapper: "The pipeline fills in the header values. Don't comment on duration or on being a partial section, and don't write a Status footer." Merge: drop note lines mentioning `section N of`/duration, and strip a trailing `---` from non-final chunks. |
+| **STY-2** | P1 | hotfix | `api/services/style_engine/entities.py:21` `_TABLE_ROW_RE`, `extract_proper_nouns` | The "authoritative proper nouns" list (injected into formatter, SEO and timestamp prompts) requires every token to be capitalised, so **"Anya van Wagtendonk" never matches** (probe: `Derrick Van Orden` matches, `Anya van Wagtendonk` → None). It also reads only the speaker table, so the people an episode is *about* (Tiffany, Crowley, Van Orden, Cooke, Moore) are never listed. SEO's "Keyword candidates verified present" uses the same list, so it tells SEO that every subject of the episode is unverified. This is the root cause of 6POL0213's SEO-3 keyword finding. Registering bare surnames (`Johnson`) is also risky on a show where both Shawn Johnson and Speaker Mike Johnson appear, and the SEO subagent flagged exactly that. | Allow lowercase particles (`van`, `de`, `von`, `la`…) in the regex and add a test with this analyst output. Extract candidates from the SRT (capitalised n-grams verified present) rather than from the speaker table alone. Don't register a bare surname when two listed names share it. |
+| **SEO-3** | P1 | hotfix | `worker.py` SEO prompt `formatted[:2000]` | **Worse than on 6POL0213.** SEO's 2,000-char excerpt was ~1,750 chars of header + review-notes block, which left SEO **one** dialogue turn, cut mid-sentence. The more uncertain the formatter is, the less transcript SEO gets. The SEO subagent: "the transcript in user.md was truncated after one line". | Give SEO the full dialogue (strip header and notes first). It is ~20 KB. |
+| **STY-3** | P2 | hotfix (editorial ruling) | `config/house_style.yaml` "write it right the first time" + style block "override anything else" | AP abbreviations (`Gov.`, `Pres.`, `Sen.`) and word changes (`Marquette Poll`) are imposed on verbatim speech, and the style block declares itself authoritative over the VERBATIM mandate. Both formatter runs here and on 6POL0213 resolved the conflict in favour of style. | Editorial call: do transcripts take AP abbreviations? Either scope these rules to metadata phases, or say explicitly that they apply to transcripts. |
+| **SEO-4** | P2 | hotfix (editorial ruling) | `prompts/seo.md` title limit | The SST Release Title (87 chars **including** the ` \| Inside Wisconsin Politics` suffix, 59 without) was judged over the 80-char limit, and SEO wrote a new title in place of the editor's. Every IWP SST title carries that suffix. | Decide whether the limit counts the series suffix. Then say so in the prompt, and check it deterministically. |
+| **ATTR-1** | P1 | v-next | design (as on 6POL0213) | Two formatter runs (same model, same source) disagreed on 2 of the 3 ambiguous turns: cold open Shawn vs `Narrator`, "Hello." `Guest` vs Zac. Both flagged 17:41 the same way. The analyst's Act-3 prose attributes the Nugent/Favre line to Shawn, and **both formatters correctly overrode it**, because the line addresses "Shawn". | Diarization when media exists. Otherwise per-turn attribution confidence as an item flag. |
+| **SST-2** | P2 | hotfix | `worker.py` `_extract_speakers_from_sst` | With Host/Presenter empty, speakers are extracted from the **series-level** Project Notes, so Anya van Wagtendonk is fed to every phase as a presenter. The record's own social draft says this episode is Shawn, Zac and Rich. The analyst caught it this time ("does not speak in this episode"). | Prefer names found in episode-level fields (social draft, descriptions) over series notes, or label series-notes names "regular panel (may not appear)". |
+| **AN-2** | P2 | hotfix | `prompts/analyst.md` | The analyst's Production Notes said "Campaign advertisements are referenced but video content is not transcribed". The SRT contains the ad audio. The formatter had to override the analyst. Its metadata self-count was also wrong again: it claimed 347 for a long description that measures 358. | Low priority. Analyst drafts are re-written downstream. |
+| **TS-1 / TS-2** | P2 | hotfix | timestamp pre-stage | (1) Boundary candidates are speaker transitions only, so a topic change inside one speaker's turn (the live-events plug and sign-off at ~18:11) can never be a chapter. (2) The pre-stage says duration is "18:52 (exact)" but the SRT ends at 18:52.199. The system prompt's checklist says the final chapter ends at the last SRT timestamp, so the model chose 18:52.000. | (1) Add sentence-start candidates after long pauses or at topic cues. (2) Pass millisecond-exact end, or reword. |
+| **STY-1** | P2 | hotfix | style pre-stage renderer, `house_style.yaml:232` | The `note:` of rule `de_italicize_program_names` is rendered into prompts as a style rule: "…replace is a backreference to the matched name." | Don't render `note` for regex rules, or give the rule a model-facing description. |
+
+## 3. Regression check against the 6POL0213 findings
+
+| 6POL0213 ID | Status on the stack (6POL0215) | Evidence |
+|---|---|---|
+| QA-1 (prose substring routing) | **Fixed on main (#411)**, not exercised (validator passed) | Same verdict routes `COMPLETED` on stack and main |
+| VAL-1 (review notes "required") | **Fixed in prompt (#412)**, but did not change this outcome | main's prompt also passed: §RUNLOG validator |
+| VAL-2 (`draft` flagged) | **Fixed in prompt (#412)**; SEO emitted `draft` and it passed. main's prompt also passed it | `validator/`, `validator/main-prompt/` |
+| FMT-1 (chunk header/Status) | **Not exercised** by the prod path (single call). In the forced-chunk run: **fixed** for the header (#413 + #421) and the Status footer, with new residue → **FMT-3** | `formatter/forced-chunk/` |
+| RETRY-1 (chunk retries drop feedback) | **Half fixed.** Operator retries carry flags into chunks (#413). Auto-escalation does not, on either path → **ESC-1** | static read of `_finalize_with_qa_gate` |
+| LLM-1 (reasoning eats `max_tokens`) | **Control present** on single-call and chunked formatter calls (`reasoning: {enabled: false}` in `call_meta.json`). Not measurable without OpenRouter | `formatter/call_meta.json` |
+| SEO-1 (drafting trail) | **Not recurring** (Sonnet + #412) | `seo/output.md` |
+| SEO-2 (Haiku can't count) | **Not recurring** with Sonnet (#422). The analyst (Haiku) and validator (Haiku) still miscount: claimed 347 vs 358, and 69/290 vs 67/275 | harness `gate seo` |
+| SEO-3 (2 KB excerpt; candidate list) | **Still present, worse**; root cause of the candidate list found → **STY-2** | `seo/user.md` |
+| AN-1 (act timings past duration) | **Fixed (#412)**: max timing 1,127 s ≤ 1,132 s | harness `gate analyst` |
+| SST-1 (social field name) | **Fixed (#422)**: social draft reaches all prompts | `analyst/user.md` |
+| OBS-1 (paused-at-timestamp attribution) | Not exercised (no pause) | — |
+| WC-1 (`job.word_count` inflation) | **Still present**: 5,005 vs 3,477 (gap = 382 × 4). #409 fixes the chunking input only | intake |
+| PROMPT-1 (unfilled model placeholder) | **Still present** (analyst, SEO). SEO self-filled "Claude Sonnet 5" | `seo/output.md` |
+| PROMPT-2 (example labels with parentheticals) | Not observed. No parenthetical labels were produced | speaker counts |
+| ATTR-1 (inferred attribution) | **Still present**: 2 of 3 ambiguous turns differ between runs | §2 |
+
+## 4. PR stack interactions
+
+- **Merge conflicts (all trivial, none semantic):** #413 vs #409 in `worker.py` + `tests/api/test_worker.py`, with both adding methods and test classes at the same anchor. #421 vs (#409+#413) in `tests/api/test_worker.py`, where two test classes were interleaved around a shared `_worker()` helper. Whichever of #409/#413/#421 lands second needs a rebase.
+- Stack suite: **1892 passed, 1 skipped, 5 xfailed**.
+- **`black --check .` already fails on `main`**: four files in `test-runs/2026-09-24-6POL0213-manual-supervisor/` (`build_sst.py`, `compare_404.py`, `replay_formatter.py`, `harness.py`) would be reformatted. Merged as part of #410 while CI was billing-locked. The first PR to run CI again will fail on files it didn't touch. This PR's own files pass `ruff` and `black`. The 6POL0213 files are deliberately left unchanged here, to keep this a docs-only diff.
+- **#409 changes which fixes this episode exercises.** With #409, an ~19-minute IWP episode no longer chunks (budget ≫ 3,477 words), so #413/#421 only matter for longer episodes, or once the formatter backend's `max_tokens` is lowered. They still matter, and FMT-3 says they need one more pass.
+
+## 5. Recommendation
+
+1. **Land the stack** (#409, #412, #413 → #421, #422). It completes a job that main would have paused, and nothing in this run argues against any of the five.
+2. **Next hotfixes, all small:** ESC-1 (put the flags into the escalation context), FMT-3 (chunk-0 wrapper wording + merge cleanup), STY-2 (regex particles + test), SEO-3 (full dialogue to SEO), and FMT-2's prompt half (no edits to quoted ad/clip audio, and reconstruct only what is unintelligible).
+3. **Editorial rulings needed from a human, not code:** STY-3 (AP abbreviations in verbatim transcripts?), SEO-4 (does the 80-char title limit include ` | Program`?).
+4. **v-next:** a deterministic source↔transcript word diff (FMT-2/VAL-3). It is the one fidelity check the pipeline lacks, and the place where an LLM validator is the wrong tool. GATE-1 also belongs here: this job shows that "needs_review + accurate note + validator pass → completed" is already the de facto policy, so decide it on purpose.
+
+## 6. Artifacts
+
+This repo is public, so only the write-up and the harness live here. The run's data (source `.srt`, `sst_context.json`, `build_sst.py`, and for each phase `system.md` / `user.md` / `call_meta.json` / `output.md` / `selfreport.md`, plus `validator/main-prompt/` and `formatter/forced-chunk/`) is in the private repo `public-media-work/internal-production-data` at `cardigan/2026-10-08-6POL0215-manual-supervisor/6POL0215-stack/`. Paths in `RUNLOG.md` such as `formatter/output.md` are relative to that folder. To re-run the harness, copy it next to that data and set `CODE` to a `git archive` export of the code under test. Nothing was written to Airtable or prod. The stack branch was never pushed.
