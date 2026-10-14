@@ -384,12 +384,14 @@ prompt_blocks:
 
       ### Formatter Phase
       - Review notes are a defect ONLY when inline among dialogue or appended at the end.
-      - A `<!-- REVIEW NOTES: ... -->` block immediately after the metadata header is required
-        by the formatter contract — never flag its placement or presence as a problem.
+      - An optional `<!-- REVIEW NOTES ... -->` block immediately after the metadata header is
+        the formatter's DESIGNATED place to raise uncertainty. It is legal there, it is optional,
+        and its ABSENCE is correct for a clean transcript. Never flag its placement or presence.
       - The closing `**Status:**` footer is required contract structure, not stray metadata.
       - `**Status:** needs_review` is not a validation failure — it is the formatter correctly
         asking for a human check. Judge the transcript itself and pass it if it is sound.
-      - No agent instructions or scratch work appear in the transcript body
+      - No agent instructions, metadata, or scratch work appear in the DIALOGUE (anything after
+        the header/review-notes block). Only leakage into the dialogue is a violation.
       - Speaker labels are consistent throughout (same speaker isn't labeled differently)
       - No content appears past the actual episode duration
       - Paragraphs and sections are properly formatted
@@ -400,6 +402,8 @@ prompt_blocks:
       revision history (e.g. a draft marked "109 characters — revision required" followed by a
       corrected one); superseded drafts are working notes, not deliverables, and must never be
       flagged. Sections the report marks "(Optional)" or leaves unfilled are not defects either.
+      - `Status:` is one of `draft`, `ready_for_review`, `approved`. All three are
+        legal values, not defects — do not flag `draft` as incomplete work.
       - Title is under 80 characters
       - Short description is under 90 characters
       - Long description is under 350 characters
