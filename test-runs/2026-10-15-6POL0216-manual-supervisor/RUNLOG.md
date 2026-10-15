@@ -78,10 +78,14 @@ WC-1 persists: 5,101 − 3,557 = 1,544 = 386 × 4.
 | single call, identical retry | Sonnet | blocked (~16 s) |
 | single call, identical prompt | **Opus** | blocked (~96 s) |
 
-The subagent transcripts (`~/.claude/projects/…/subagents/agent-*.jsonl`) show only the refusal stop and the platform
-notice. The withheld content and the reason are not logged. The captions both runs had just read (~10:00–13:00) are
-routine. Nothing was reworded or split to get past the stops. The retries were identical, with one escalation to Opus,
-at the operator's direction. Write-up: `CLASSIFIER-BLOCK-REPORT.md`.
+The UI notice gave no reason. **The raw transcripts do record one** (`stop_details`):
+`"category":"reasoning_extraction"`, *"blocked as it seems to violate Anthropic's Terms of Service restrictions on
+reverse engineering or duplicating model outputs"*. It appears on the single call, the retry and the Opus run; chunk 0 and
+timestamp have no category recorded. Every recorded stop came during a thinking-only turn, before any output. A later
+**control run with the self-report request removed was also refused** (`[reasoning_extraction]`, `req_011Cg4i1XWvmzpfGgwcwbokq`).
+So the trigger is not the self-report and not the subject matter. The "stand in for an LLM API call" framing is the
+leading (unverified) suspect. It was deliberately not probed further; Anthropic's documented next step is support with
+the request IDs. Investigation: `CLASSIFIER-BLOCK-REPORT.md` (private folder).
 
 ### OpenRouter replay (`formatter/replay/`)
 - First call with prod's payload (`reasoning: {"enabled": false}`) on sonnet-5.5 → **HTTP 400 "Reasoning is mandatory
