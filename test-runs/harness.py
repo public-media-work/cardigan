@@ -44,6 +44,9 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PHASES = ["analyst", "formatter", "seo", "validator", "timestamp"]
 
+# Hand-copied from prod's routing: config/llm-config.json `phase_models` (haiku-4.5 analyst and
+# validator, sonnet-4.6 formatter and timestamp, sonnet SEO since #422) and `qa_escalation.family_order`.
+# Update these when that routing changes; `intake` prints the live phase_models to compare.
 SUBAGENT_TIER = {
     "analyst": "haiku",
     "formatter": "sonnet",
@@ -96,7 +99,7 @@ def load_code(run):
     except ImportError as e:
         sys.exit(
             f"cannot import the code under test ({e}). Run the harness with the repo venv: "
-            "~/Developer/cardigan/venv/bin/python test-runs/harness.py …"
+            "<main checkout>/venv/bin/python test-runs/harness.py …"
         )
     # The worker logs prod-style JSON (job_id 9999 is the harness's fake job); keep stdout readable.
     logging.disable(logging.INFO)
@@ -379,13 +382,14 @@ def cmd_prompts(a):
         f"{w.llm.config['phase_models'].get(a.phase)}"
     )
     keys = ("**Proper nouns", "**Keyword candidates", "**Boundary candidates", "- (none detected")
-    style = [line for line in user.splitlines() if line.startswith(keys)]
-    print(
-        "style-block lines to check (names / keywords / chapter candidates):",
-        "(none for this phase)" if not style else "",
-    )
-    for line in style:
-        print("  ", line[:240])
+    print("style-block lines to check (names / keywords / chapter candidates):")
+    for i, call in enumerate(rec.calls):
+        user = next(m["content"] for m in call["messages"] if m["role"] == "user")
+        style = [line for line in user.splitlines() if line.startswith(keys)]
+        label = f"  call {i}:" if multi else " "
+        print(label, "(none for this phase)" if not style else "")
+        for line in style:
+            print("    ", line[:240])
 
 
 def cmd_brief(a):
@@ -580,8 +584,12 @@ def cmd_gate(a):
         gate_validator(run, out, w, wm, a.variant)
     elif a.phase == "formatter":
         gate_formatter(run, out, w, a.variant)
-    else:
-        {"analyst": gate_analyst, "seo": gate_seo, "timestamp": gate_timestamp}[a.phase](run, out, w)
+    elif a.phase == "analyst":
+        gate_analyst(run, out, w)
+    elif a.phase == "seo":
+        gate_seo(run, out, w)
+    elif a.phase == "timestamp":
+        gate_timestamp(run, out, w)
 
 
 def gate_validator(run, out, w, wm, variant):
@@ -678,6 +686,13 @@ def main():
     c.add_argument("--variant", **variant)
     sub("index", "print an index row for the private cohort")
     a = p.parse_args()
+    # Resolve every local path against the caller's cwd now: load_code() later chdirs into the
+    # code tree, after which a relative --record / --project / --flags would resolve there.
+    for attr in ("run_dir", "record", "project", "flags", "dest", "code"):
+        if getattr(a, attr, None):
+            setattr(a, attr, str(Path(getattr(a, attr)).resolve()))
+    if getattr(a, "srt", None) and not a.srt.startswith(("http://", "https://")):
+        a.srt = str(Path(a.srt).resolve())
     {
         "code": cmd_code,
         "setup": cmd_setup,

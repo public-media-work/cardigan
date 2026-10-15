@@ -40,7 +40,7 @@ Use one command per Bash call, with literal absolute paths: no shell variables, 
 1. **Code.** `harness.py code --dest <cohort>/_code-main`. If there are PRs, also run `harness.py code --dest <cohort>/_code-stack --prs 409,421`. With no PRs, the stack *is* main, so use `_code-main` for both units and skip the second unit's phases.
    - A PR stack is a detached git **worktree**; plain main is a plain export.
    - A merge conflict stops the command. If it's trivial (both sides add code at the same anchor), resolve it in that worktree, `git commit`, then re-run the same `code --dest … --prs <remaining PRs>`. It continues in the existing worktree. If it isn't trivial, ask. Log every conflict.
-   - Then run `~/Developer/cardigan/venv/bin/python -m pytest -q` with cwd set to the stack tree.
+   - Then run `<main checkout>/venv/bin/python -m pytest -q` with cwd set to the stack tree.
 2. **Setup** each unit: `harness.py setup --run-dir <cohort>/<label>-stack --srt <url|path> --code <cohort>/_code-stack [--media-id ID]`. Do the same for `<label>-main` with `--code <cohort>/_code-main`. `setup` reports `ascii_only` and the count of `?`-only captions, which are music glyphs lost upstream (#457). `source_last_modified` is only known for URLs.
 3. **SST.** `harness.py sst-fields` prints the field names. Read the SST record (table `tblTKFOwTvK7xw1H5`, search `Media ID`) and its linked Project (`tblU9LfZeVNicdB5e`), **read-only**. Save each as `{"id": …, "fields": {<field name>: value}}`, then run `harness.py sst --run-dir <unit> --record r.json --project p.json` for each unit.
    - If there's no record, run `sst --run-dir <unit>` with no files. No `sst_context.json` is written, and intake then shows `sst_loaded: false`. Running without SST is a finding (#452).
