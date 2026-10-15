@@ -182,9 +182,12 @@ def cmd_setup(a):
     src = a.srt
     name = Path(src.split("?")[0]).name
     if src.startswith("http"):
-        with urllib.request.urlopen(src) as r:
-            data = r.read()
-            modified = r.headers.get("Last-Modified")
+        try:
+            with urllib.request.urlopen(src, timeout=60) as r:
+                data = r.read()
+                modified = r.headers.get("Last-Modified")
+        except OSError as e:  # URLError, HTTPError and timeouts are all OSErrors
+            sys.exit(f"could not download {src}: {e}")
     else:
         data = Path(src).read_bytes()
         modified = None
@@ -351,6 +354,8 @@ def cmd_prompts(a):
     with mock.patch.object(wm, "log_event", _noop):
         asyncio.run(w._run_phase(run.job["id"], a.phase, ctx, ctx["project_path"], model_override=a.model))
     shutil.rmtree(ctx["project_path"], ignore_errors=True)
+    if not rec.calls:
+        sys.exit(f"no LLM call captured for {a.phase}: _run_phase returned without calling the model")
     base = run.phase_dir(a.phase, a.variant)
     multi = len(rec.calls) > 1
     for i, call in enumerate(rec.calls):
@@ -572,14 +577,11 @@ def cmd_gate(a):
     if out is None:
         sys.exit(f"no output.md for {a.phase} {a.variant or ''}")
     if a.phase == "validator":
-        return gate_validator(run, out, w, wm, a.variant)
-    {"analyst": gate_analyst, "seo": gate_seo, "timestamp": gate_timestamp}.get(a.phase, None) and {
-        "analyst": gate_analyst,
-        "seo": gate_seo,
-        "timestamp": gate_timestamp,
-    }[a.phase](run, out, w)
-    if a.phase == "formatter":
+        gate_validator(run, out, w, wm, a.variant)
+    elif a.phase == "formatter":
         gate_formatter(run, out, w, a.variant)
+    else:
+        {"analyst": gate_analyst, "seo": gate_seo, "timestamp": gate_timestamp}[a.phase](run, out, w)
 
 
 def gate_validator(run, out, w, wm, variant):
@@ -636,45 +638,45 @@ def cmd_index(a):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest="cmd", required=True)
-    c = s.add_parser("code")
-    c.add_argument("--dest", required=True)
-    c.add_argument("--prs")  # noqa: E702
-    c = s.add_parser("setup")
-    c.add_argument("--run-dir", required=True)
-    c.add_argument("--srt", required=True)  # noqa: E702
-    c.add_argument("--code", required=True)
-    c.add_argument("--media-id")
-    c.add_argument("--prs")  # noqa: E702
-    c = s.add_parser("sst-fields")
-    c.add_argument("--run-dir")  # noqa: E702
-    c = s.add_parser("sst")
-    c.add_argument("--run-dir", required=True)  # noqa: E702
-    c.add_argument("--record")
-    c.add_argument("--project")  # noqa: E702
-    c = s.add_parser("intake")
-    c.add_argument("--run-dir", required=True)  # noqa: E702
-    c = s.add_parser("prompts")
-    c.add_argument("--run-dir", required=True)
-    c.add_argument("phase", choices=PHASES)  # noqa: E702
-    c.add_argument("--variant")
-    c.add_argument("--flags")
-    c.add_argument("--feedback")  # noqa: E702
-    c.add_argument("--model")
-    c.add_argument("--force-max-tokens", type=int)  # noqa: E702
-    c = s.add_parser("brief")
-    c.add_argument("--run-dir", required=True)
-    c.add_argument("phase", choices=PHASES)  # noqa: E702
-    c.add_argument("--variant")
-    c.add_argument("--chunk", type=int)  # noqa: E702
-    c = s.add_parser("merge")
-    c.add_argument("--run-dir", required=True)
-    c.add_argument("--variant")  # noqa: E702
-    c = s.add_parser("gate")
-    c.add_argument("--run-dir", required=True)
-    c.add_argument("phase", choices=PHASES)  # noqa: E702
-    c.add_argument("--variant")
-    c = s.add_parser("index")
-    c.add_argument("--run-dir", required=True)  # noqa: E702
+
+    def sub(name, help_, run_dir=True):
+        c = s.add_parser(name, help=help_, description=help_)
+        if run_dir:
+            c.add_argument("--run-dir", required=True, help="unit directory (holds run.json)")
+        return c
+
+    variant = {"help": "variant subdir, e.g. esc, supervised, forced-chunk"}
+    c = sub("code", "export origin/main, or build main + PRs in a detached worktree", run_dir=False)
+    c.add_argument("--dest", required=True, help="new directory for the code tree")
+    c.add_argument("--prs", help="comma-separated PR numbers to merge (re-run to resume after a conflict)")
+    c = sub("setup", "create a unit: fetch the SRT and write run.json")
+    c.add_argument("--srt", required=True, help="URL or local path")
+    c.add_argument("--code", required=True, help="code tree from `code`")
+    c.add_argument("--media-id", help="drives the SST lookup; omit if unknown")
+    c.add_argument("--prs", help="recorded in run.json for the log")
+    c = sub("sst-fields", "print the Airtable field names to fetch", run_dir=False)
+    c.add_argument("--run-dir", help="optional: use this unit's code tree")
+    c = sub("sst", "build sst_context.json through the worker's _fetch_sst_context")
+    c.add_argument("--record", help='SST record JSON {"id": ..., "fields": {name: value}}; omit if none')
+    c.add_argument("--project", help="linked Project record JSON, same shape")
+    sub("intake", "metrics, caption convention, chunking decision, models, SST status")
+    c = sub("prompts", "capture the prompt(s) prod would send for a phase")
+    c.add_argument("phase", choices=PHASES)
+    c.add_argument("--variant", **variant)
+    c.add_argument("--flags", help="JSON list of validator flags (operator-retry emulation only)")
+    c.add_argument("--feedback", help="editorial feedback text (operator-retry emulation only)")
+    c.add_argument("--model", help="model override, e.g. for escalation")
+    c.add_argument("--force-max-tokens", type=int, help="experiment: lower the formatter cap to force chunking")
+    c = sub("brief", "print the subagent dispatch prompt for a captured phase")
+    c.add_argument("phase", choices=PHASES)
+    c.add_argument("--variant", **variant)
+    c.add_argument("--chunk", type=int, help="chunk index for a chunked formatter")
+    c = sub("merge", "merge chunkN/output.md with prod's merge_formatter_chunks")
+    c.add_argument("--variant", **variant)
+    c = sub("gate", "run prod's gates (and the harness's checks) on a phase output")
+    c.add_argument("phase", choices=PHASES)
+    c.add_argument("--variant", **variant)
+    sub("index", "print an index row for the private cohort")
     a = p.parse_args()
     {
         "code": cmd_code,

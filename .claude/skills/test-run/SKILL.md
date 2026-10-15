@@ -9,7 +9,7 @@ Drive one caption file through Cardigan's real prompt builders and gates, with e
 
 **The method's one rule:** never re-implement what prod does. Prompts are *captured* from the worker's own `_run_phase`, gates are the worker's own gate code, and SST context comes from the worker's own `_fetch_sst_context`. `test-runs/harness.py` does all of this.
 
-**Interpreter:** always use `~/Developer/cardigan/venv/bin/python test-runs/harness.py …` (the main checkout's venv has the deps; a worktree has none). Per-command flags: `… harness.py <command> -h`.
+**Interpreter:** run the harness with the Python of the cardigan checkout's venv, `<main checkout>/venv/bin/python test-runs/harness.py …`. On Mark's machine that is `~/Developer/cardigan/venv/bin/python`. A worktree has no venv of its own, so use the main checkout's. If there is no venv, create one per CLAUDE.md first. Per-command flags: `… harness.py <command> -h`.
 
 ## Before starting: settle four things with the operator
 
