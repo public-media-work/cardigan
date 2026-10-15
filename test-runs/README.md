@@ -7,6 +7,7 @@ findings write-up. These are evidence for bug reports, not fixtures for the test
 | Run | What | Start here |
 |---|---|---|
 | `2026-09-24-6POL0213-manual-supervisor/` | Inside Wisconsin Politics 6POL0213 driven through all five phases by a supervisor agent against `origin/main` e142891 (prod's revision), with OpenRouter replays of the formatter on Sonnet 5. Found why prod jobs pause and what unblocks them. | `FINDINGS-6POL0213.md`, then `RUNLOG.md` |
+| `2026-10-08-6POL0215-manual-supervisor/` | Inside Wisconsin Politics 6POL0215 driven through all five phases against main + the open hotfix stack (#409, #412, #413, #421, #422), with prompts captured from the worker's own `_run_phase`. Completes unassisted. Also a forced-chunk run of #413/#421, a main-vs-stack validator comparison, and a regression table for every 6POL0213 finding. Write-up and harness only. The prompts, outputs and SRT are in the private `internal-production-data` repo (`cardigan/2026-10-08-6POL0215-manual-supervisor/`). | `FINDINGS-6POL0215.md`, then `RUNLOG.md` |
 
 ## Layout of a run folder
 
