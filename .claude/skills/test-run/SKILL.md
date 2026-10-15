@@ -23,7 +23,9 @@ Ask with `AskUserQuestion`. If you're a subagent without it, stop and return the
 ## Names and places
 
 - **label**: the media ID, or the caption file's stem (`6POL0215`, `Ojibwe_Music`).
-- **cohort**: `~/Developer/cardigan/OUTPUT/supervised-runs/<YYYY-MM-DD>-<label>-manual-supervisor/`. This path is in the **main checkout**, even when you work from a worktree. `OUTPUT/` is gitignored, so the operator can find it. Use literal absolute paths.
+- **cohort**: `<checkout>/OUTPUT/supervised-runs/<YYYY-MM-DD>-<label>-manual-supervisor/`, where `<checkout>` is **the checkout you are running in**. `OUTPUT/` is gitignored everywhere.
+  - In the main checkout, that is `~/Developer/cardigan/OUTPUT/…`, which is where the operator looks.
+  - In a **worktree** session, use the worktree's own `OUTPUT/`. A worktree-isolated session can't Edit/Write the main checkout, a `cd` there locks Bash, and subagents can't write there either. At close, copy the finished cohort to `~/Developer/cardigan/OUTPUT/supervised-runs/` with one `cp -R` using literal absolute paths, so the operator finds it in the usual place.
 - **unit**: one run directory inside the cohort. Use `<label>-stack` for the code under test and `<label>-main` for the comparison. The harness names nothing itself; `--run-dir` is always explicit.
 - **Code trees**: `<cohort>/_code-stack`, `<cohort>/_code-main`. Never archived.
 - **Log and findings**: `<cohort>/RUNLOG.md`, `<cohort>/FINDINGS-<label>.md`.
@@ -31,7 +33,7 @@ Ask with `AskUserQuestion`. If you're a subagent without it, stop and return the
 
 `public-media-work/cardigan` is **PUBLIC**. Transcripts, captured prompts, outputs, self-reports, SST JSON and producers' drafts go to the private repo only. A public PR carries at most the write-up and harness changes, and only when the operator says so.
 
-Use one command per Bash call, with literal paths. Worktree guards refuse compound or variable-built commands.
+Use one command per Bash call, with literal absolute paths: no shell variables, no `<(…)`, no `cd` outside your checkout. Worktree guards refuse compound or variable-built commands.
 
 ## Steps
 
@@ -93,8 +95,9 @@ If the operator wants the metadata itself, give it in chat with corrections note
 1. Delete each unit's `_scratch_out/` if it is present.
    - For a PR stack, run `git worktree remove <cohort>/_code-stack` after confirming in plain text.
    - For a plain export, delete the directory.
-2. Copy the cohort (without `_code-*`) into the private repo. Add `index.csv` and `index.json` (`harness.py index` gives one row per unit) and a row in `cardigan/README.md`. Grep for secrets, then commit and push.
-3. Ask before filing issues, commenting on PRs, or opening a public docs PR.
+2. If you ran in a worktree, copy the cohort (without `_code-*`) to `~/Developer/cardigan/OUTPUT/supervised-runs/`.
+3. Copy the cohort (without `_code-*`) into the private repo. Add `index.csv` and `index.json` (`harness.py index` gives one row per unit) and a row in `cardigan/README.md`. Grep for secrets, then commit and push.
+4. Ask before filing issues, commenting on PRs, or opening a public docs PR.
 
 ## Caveats to state in every write-up
 
