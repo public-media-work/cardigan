@@ -18,9 +18,9 @@ def load(name, path):
     return m
 
 
-from api.services.utils import calculate_transcript_metrics as main_metrics  # noqa: E402
 from api.services.chunking import split_transcript as main_split  # noqa: E402
 from api.services.speaker_segmentation import split_interior_speaker_changes  # noqa: E402
+from api.services.utils import calculate_transcript_metrics as main_metrics  # noqa: E402
 
 u404 = load("utils_404", RUN / "utils_404.py")
 c404 = load("chunking_404", RUN / "chunking_404.py")
