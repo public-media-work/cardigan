@@ -7,6 +7,7 @@ findings write-up. These are evidence for bug reports, not fixtures for the test
 | Run | What | Start here |
 |---|---|---|
 | `2026-09-24-6POL0213-manual-supervisor/` | Inside Wisconsin Politics 6POL0213 driven through all five phases by a supervisor agent against `origin/main` e142891 (prod's revision), with OpenRouter replays of the formatter on Sonnet 5. Found why prod jobs pause and what unblocks them. | `FINDINGS-6POL0213.md`, then `RUNLOG.md` |
+| `2026-10-15-6POL0216-manual-supervisor/` | Inside Wisconsin Politics 6POL0216 against main 980f945 + #409/#421/#422. Claude Code subagents on Sonnet/Opus 5.5 were stopped by Anthropic's `reasoning_extraction` (anti-distillation) classifier, so the formatter and timestamp ran on OpenRouter `claude-sonnet-5.5`. Found that 5.5 rejects #409's reasoning-off (HTTP 400), plus TS-5 and FMT-4. Only the write-up and scripts are public; the data is in `internal-production-data`. | `FINDINGS-6POL0216.md`, then `RUNLOG.md` |
 
 ## Layout of a run folder
 
