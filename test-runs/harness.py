@@ -403,27 +403,27 @@ def cmd_brief(a):
         d = d / f"chunk{a.chunk}"
     if not (d / "user.md").exists():
         sys.exit(f"no captured prompt in {d}; run `prompts` first")
+    # Self-reports ask for decisions and evidence, never a log of reasoning: per Anthropic's guidance,
+    # a request for reasoning "in full" is what the reasoning_extraction safeguard is there to stop.
     asks = {
-        "analyst": "anything you had to guess (speaker identities, spellings, program name, timings)",
-        "formatter": "every speaker attribution you were unsure of (timecode, who, why), every word you added, "
-        "removed or changed relative to the captions, how you handled sound cues and non-English "
-        "speech, and whether you added review notes or set needs_review and why",
-        "seo": "what information you felt was missing, how you counted characters, and anything you guessed",
-        "validator": "for each flag you raised, or considered and did not raise, why",
-        "timestamp": "how you chose each chapter boundary (with the SRT caption it starts on) and anything you guessed",
+        "analyst": "names, spellings, program or timings you could not confirm from the input",
+        "formatter": "speaker attributions you weren't sure of (timecode, who you chose); words you changed "
+        "(caption -> output); how sound cues and non-English speech were rendered; whether you added "
+        "review notes or set needs_review, and the reason",
+        "seo": "information you needed but did not have; anything you could not confirm from the input",
+        "validator": "flags you raised, and any you considered but left out, each with the evidence",
+        "timestamp": "each chapter start with the SRT caption it begins on; any boundary you were unsure of",
     }
     tier = SUBAGENT_TIER[a.phase]
     print(f"DISPATCHER: send the text between the rules as one subagent prompt, with the Agent tool's model={tier}.")
     print("-" * 72)
     print(
-        f"""You are acting as one LLM call inside a content-processing pipeline. Read only the two input files named below; write only the two output files named below.
+        f"""Do this task. In the directory below, system.md is your instructions and user.md is the input. Read both in full (use offset/limit if they are long), and read no other files.
 
 Directory: {d}
 
-1. Read system.md in that directory. Treat it as your system prompt.
-2. Read user.md in that directory. Treat it as the user message. Read all of it (use offset/limit if it is long).
-3. Produce exactly the response that system prompt asks for. Write ONLY that response, with no preamble or commentary, to output.md in that directory (write in parts and append if it is long).
-4. Then write selfreport.md in that directory: a bullet list of instructions that conflicted or were ambiguous and how you resolved each, plus {asks[a.phase]}. Be candid.
+1. Write the result the instructions ask for to output.md in that directory: the result only, with no preamble or commentary (write in parts and append if it is long). Don't use tools to count, measure or compute anything in the result.
+2. Then write selfreport.md in that directory, a short list of: instructions that conflicted (quote them) and which one you followed; {asks[a.phase]}; anything an editor should check.
 
 Reply with a 3-line summary when done."""
     )
@@ -641,7 +641,13 @@ def _openrouter_key():
 
 
 def cmd_replay(a):
-    """Send a captured prompt to OpenRouter unchanged: the fallback when a subagent can't run a phase."""
+    """Send a captured prompt to OpenRouter unchanged: the fallback when a subagent can't run a phase.
+
+    It sends exactly what the code under test passed to ``llm.chat`` for this call: the captured
+    messages, the backend's ``max_tokens``, and a ``reasoning`` kwarg only if the worker passed one
+    (plain main passes none; #409 adds ``{"enabled": False}`` for the formatter). Other kwargs are
+    not forwarded and are listed in ``notes``.
+    """
     import os
     import time
 
@@ -656,25 +662,44 @@ def cmd_replay(a):
     system = (d / "system.md").read_text(encoding="utf-8")
     user = (d / "user.md").read_text(encoding="utf-8")
     meta = json.loads((d / "call_meta.json").read_text())
+    kwargs = meta.get("kwargs") or {}
 
     wm = load_code(run)
     w = wm.JobWorker()
-    model = a.model or meta.get("model") or w.llm.config["phase_models"].get(a.phase)
+    key = _openrouter_key()
+    model = a.model or meta.get("model") or w.llm.config.get("phase_models", {}).get(a.phase)
+    if not model:
+        sys.exit(f"no model for {a.phase}: none captured and no phase_models entry; pass --model")
     if a.newest:
         from api.services import model_roster
 
-        os.environ["OPENROUTER_API_KEY"] = _openrouter_key()
-        family = next(f for f in ("haiku", "sonnet", "opus") if f in model)
-        newest = asyncio.run(model_roster.newest_in_family(family, ["fast", "fable"]))
-        if not newest:
+        family = next((f for f in ("haiku", "sonnet", "opus") if f in model), None)
+        if not family:
+            sys.exit(f"--newest: can't tell the family of {model!r}; pass --model")
+        os.environ["OPENROUTER_API_KEY"] = key
+        model = asyncio.run(model_roster.newest_in_family(family, ["fast", "fable"]))
+        if not model:
             sys.exit(f"model roster returned nothing for {family}; pass --model explicitly")
-        model = newest
-    try:
-        prod_max = w.llm.get_backend_config(meta.get("backend") or "openrouter").get("max_tokens")
-    except Exception:
-        prod_max = None
-    max_tokens = a.max_tokens or prod_max or 16384
-    reasoning = (meta.get("kwargs") or {}).get("reasoning")
+    max_source = "--max-tokens"
+    max_tokens = a.max_tokens
+    if not max_tokens:
+        try:
+            max_tokens = w.llm.get_backend_config(meta.get("backend") or "openrouter").get("max_tokens")
+            max_source = f"backend {meta.get('backend')!r} config"
+        except Exception as e:
+            max_source = f"fallback 16384 (backend config unreadable: {e})"
+        if not max_tokens:
+            max_tokens, max_source = 16384, "fallback 16384 (backend sets no max_tokens)"
+    print(f"model={model} max_tokens={max_tokens} ({max_source})")
+
+    notes = []
+    reasoning = kwargs.get("reasoning")
+    if reasoning is None:
+        notes.append("no reasoning control captured: the code under test sends none, so the model default applies")
+        print("NOTE:", notes[-1])
+    dropped = sorted(k for k in kwargs if k != "reasoning")
+    if dropped:
+        notes.append(f"captured kwargs not forwarded: {dropped}")
 
     payload = {
         "model": model,
@@ -685,16 +710,24 @@ def cmd_replay(a):
     if reasoning is not None:
         payload["reasoning"] = reasoning
     headers = {
-        "Authorization": f"Bearer {_openrouter_key()}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://pbswisconsin.org",
         "X-Title": "Cardigan test-run",
     }
     out = d / "replay"
     out.mkdir(exist_ok=True)
-    notes = []
+    for stale in ("output.md", "telemetry.json"):  # never leave a previous run's files to be promoted
+        (out / stale).unlink(missing_ok=True)
+
+    def post():
+        try:
+            return httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=900)
+        except httpx.HTTPError as e:
+            sys.exit(f"OpenRouter request failed ({type(e).__name__}: {e}); nothing was saved")
+
     t0 = time.time()
-    r = httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=900)
+    r = post()
     if r.status_code == 400 and REASONING_MANDATORY in r.text.lower() and "reasoning" in payload:
         # Model capability, not content: some models reject reasoning control. Record it and resend
         # the identical prompt without the control. The prompt itself is never changed.
@@ -703,7 +736,7 @@ def cmd_replay(a):
             f"{model} rejected reasoning={reasoning}; resent with reasoning ON (prod's control not replayable)"
         )
         payload.pop("reasoning")
-        r = httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=900)
+        r = post()
     elapsed = round(time.time() - t0, 1)
     raw = out / f"raw_{time.strftime('%H%M%S')}.json"
     raw.write_text(r.text, encoding="utf-8")
@@ -722,21 +755,24 @@ def cmd_replay(a):
         "finish_reason": choice.get("finish_reason"),
         "native_finish_reason": choice.get("native_finish_reason"),
         "max_tokens_sent": max_tokens,
+        "max_tokens_source": max_source,
         "reasoning_sent": payload.get("reasoning"),
         "prompt_tokens": usage.get("prompt_tokens"),
         "completion_tokens": usage.get("completion_tokens"),
         "reasoning_tokens": reasoning_tokens,
         "headroom_tokens": max_tokens - (usage.get("completion_tokens") or 0),
-        "cost_usd": usage.get("cost"),
+        "cost_usd": usage.get("cost", usage.get("total_cost")),
         "elapsed_s": elapsed,
         "content_null": content is None,
+        "raw": raw.name,
         "notes": notes,
     }
+    if content is not None:
+        (out / "output.md").write_text(content, encoding="utf-8")
     (out / "telemetry.json").write_text(json.dumps(tel, indent=2))
     print(json.dumps(tel, indent=2))
     if content is None:
         sys.exit(f"no content returned (finish_reason={choice.get('finish_reason')}); raw saved to {raw}")
-    (out / "output.md").write_text(content, encoding="utf-8")
     if tel["finish_reason"] == "length":
         print("WARNING: finish_reason=length — output truncated at max_tokens; prod would raise/pause (#403)")
     print(f"saved to {out / 'output.md'}; run `promote` to make it this phase's output")
@@ -748,12 +784,17 @@ def cmd_promote(a):
     d = run.phase_dir(a.phase, a.variant)
     if a.chunk is not None:
         d = d / f"chunk{a.chunk}"
-    src = d / "replay" / "output.md"
-    if not src.exists():
-        sys.exit(f"no replay output at {src}; run `replay` first")
-    tel = json.loads((d / "replay" / "telemetry.json").read_text())
+    src, tel_path = d / "replay" / "output.md", d / "replay" / "telemetry.json"
+    if not src.exists() or not tel_path.exists():
+        sys.exit(f"no complete replay in {d / 'replay'}; run `replay` first")
+    tel = json.loads(tel_path.read_text())
+    if tel.get("finish_reason") != "stop" and not a.force:
+        sys.exit(
+            f"replay finish_reason={tel.get('finish_reason')!r}, not 'stop'; refusing (use --force to promote anyway)"
+        )
     (d / "output.md").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-    (d / "backend.json").write_text(json.dumps({k: tel.get(k) for k in ("backend", "model_actual", "notes")}, indent=2))
+    keep = ("backend", "model_actual", "finish_reason", "reasoning_sent", "notes")
+    (d / "backend.json").write_text(json.dumps({k: tel.get(k) for k in keep}, indent=2))
     print(f"promoted {src} -> {d / 'output.md'} (backend.json records openrouter / {tel.get('model_actual')})")
 
 
@@ -830,6 +871,7 @@ def main():
     c.add_argument("phase", choices=PHASES)
     c.add_argument("--variant", **variant)
     c.add_argument("--chunk", type=int, help="chunk index for a chunked formatter")
+    c.add_argument("--force", action="store_true", help="promote even if finish_reason is not 'stop'")
     sub("index", "print an index row for the private cohort")
     a = p.parse_args()
     # Resolve every local path against the caller's cwd now: load_code() later chdirs into the
