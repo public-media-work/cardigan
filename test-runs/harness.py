@@ -1,12 +1,13 @@
 """Supervised test-run harness for Cardigan (used by the /test-run skill).
 
 Drives one caption file through prod's own prompt builders and gates, with the model
-calls made by local subagents. Every prompt is CAPTURED, not re-implemented: the
+calls made by local subagents (or, as a fallback per phase, by ``replay`` to OpenRouter,
+sending the captured prompt unchanged). Every prompt is CAPTURED, not re-implemented: the
 harness runs the worker's real ``_run_phase`` (and through it
 ``_run_formatter_chunked``) with ``llm.chat`` replaced by a recorder, so the files it
 writes are exactly what the code under test would send. Prompt capture and gates make
-no LLM, network or DB calls; only ``code`` (git fetch) and ``setup`` (SRT download) touch
-the network.
+no LLM, network or DB calls; only ``code`` (git fetch), ``setup`` (SRT download) and
+``replay`` (OpenRouter, paid, key via get-secret.sh) touch the network.
 
 Each run is a directory holding ``run.json`` (written by ``setup``), the source
 ``.srt``, and one subdirectory per phase. Every command takes ``--run-dir``.
@@ -22,6 +23,9 @@ Commands:
   brief     --run-dir D PHASE [--variant V] [--chunk N]  print the subagent dispatch prompt
   merge     --run-dir D [--variant V]    real merge_formatter_chunks over chunkN/output.md
   gate      --run-dir D PHASE [--variant V]   PHASE: analyst|formatter|seo|validator|timestamp
+  replay    --run-dir D PHASE [--variant V] [--chunk N] [--model M | --newest] [--max-tokens N]
+                                         fallback: send the captured prompt, unchanged, to OpenRouter
+  promote   --run-dir D PHASE [--variant V] [--chunk N]   make replay/output.md the phase output
   index     --run-dir D                  print an index row (JSON) for the private cohort
 
 Phases run in prod's order: analyst, formatter, seo, validator, then timestamp (which
@@ -622,6 +626,137 @@ def gate_validator(run, out, w, wm, variant):
         )
 
 
+# --------------------------------------------------------------------------- OpenRouter fallback
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+REASONING_MANDATORY = "reasoning is mandatory"
+
+
+def _openrouter_key():
+    r = subprocess.run(["get-secret.sh", "OPENROUTER_API_KEY"], capture_output=True, text=True)
+    key = r.stdout.strip()
+    if r.returncode != 0 or not key:
+        sys.exit("could not resolve OPENROUTER_API_KEY via get-secret.sh (is it on PATH?)")
+    return key
+
+
+def cmd_replay(a):
+    """Send a captured prompt to OpenRouter unchanged: the fallback when a subagent can't run a phase."""
+    import os
+    import time
+
+    import httpx
+
+    run = Run(a.run_dir)
+    d = run.phase_dir(a.phase, a.variant)
+    if a.chunk is not None:
+        d = d / f"chunk{a.chunk}"
+    if not (d / "user.md").exists():
+        sys.exit(f"no captured prompt in {d}; run `prompts` first")
+    system = (d / "system.md").read_text(encoding="utf-8")
+    user = (d / "user.md").read_text(encoding="utf-8")
+    meta = json.loads((d / "call_meta.json").read_text())
+
+    wm = load_code(run)
+    w = wm.JobWorker()
+    model = a.model or meta.get("model") or w.llm.config["phase_models"].get(a.phase)
+    if a.newest:
+        from api.services import model_roster
+
+        os.environ["OPENROUTER_API_KEY"] = _openrouter_key()
+        family = next(f for f in ("haiku", "sonnet", "opus") if f in model)
+        newest = asyncio.run(model_roster.newest_in_family(family, ["fast", "fable"]))
+        if not newest:
+            sys.exit(f"model roster returned nothing for {family}; pass --model explicitly")
+        model = newest
+    try:
+        prod_max = w.llm.get_backend_config(meta.get("backend") or "openrouter").get("max_tokens")
+    except Exception:
+        prod_max = None
+    max_tokens = a.max_tokens or prod_max or 16384
+    reasoning = (meta.get("kwargs") or {}).get("reasoning")
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": max_tokens,
+        "usage": {"include": True},
+    }
+    if reasoning is not None:
+        payload["reasoning"] = reasoning
+    headers = {
+        "Authorization": f"Bearer {_openrouter_key()}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://pbswisconsin.org",
+        "X-Title": "Cardigan test-run",
+    }
+    out = d / "replay"
+    out.mkdir(exist_ok=True)
+    notes = []
+    t0 = time.time()
+    r = httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=900)
+    if r.status_code == 400 and REASONING_MANDATORY in r.text.lower() and "reasoning" in payload:
+        # Model capability, not content: some models reject reasoning control. Record it and resend
+        # the identical prompt without the control. The prompt itself is never changed.
+        (out / f"raw_{time.strftime('%H%M%S')}_400.json").write_text(r.text, encoding="utf-8")
+        notes.append(
+            f"{model} rejected reasoning={reasoning}; resent with reasoning ON (prod's control not replayable)"
+        )
+        payload.pop("reasoning")
+        r = httpx.post(OPENROUTER_URL, json=payload, headers=headers, timeout=900)
+    elapsed = round(time.time() - t0, 1)
+    raw = out / f"raw_{time.strftime('%H%M%S')}.json"
+    raw.write_text(r.text, encoding="utf-8")
+    if r.status_code != 200:
+        sys.exit(f"HTTP {r.status_code}; body saved to {raw}")
+    data = r.json()
+    choice = data["choices"][0]
+    content = choice["message"].get("content")
+    usage = data.get("usage") or {}
+    reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+    tel = {
+        "backend": "openrouter",
+        "model_requested": model,
+        "model_actual": data.get("model"),
+        "provider": data.get("provider"),
+        "finish_reason": choice.get("finish_reason"),
+        "native_finish_reason": choice.get("native_finish_reason"),
+        "max_tokens_sent": max_tokens,
+        "reasoning_sent": payload.get("reasoning"),
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": reasoning_tokens,
+        "headroom_tokens": max_tokens - (usage.get("completion_tokens") or 0),
+        "cost_usd": usage.get("cost"),
+        "elapsed_s": elapsed,
+        "content_null": content is None,
+        "notes": notes,
+    }
+    (out / "telemetry.json").write_text(json.dumps(tel, indent=2))
+    print(json.dumps(tel, indent=2))
+    if content is None:
+        sys.exit(f"no content returned (finish_reason={choice.get('finish_reason')}); raw saved to {raw}")
+    (out / "output.md").write_text(content, encoding="utf-8")
+    if tel["finish_reason"] == "length":
+        print("WARNING: finish_reason=length — output truncated at max_tokens; prod would raise/pause (#403)")
+    print(f"saved to {out / 'output.md'}; run `promote` to make it this phase's output")
+
+
+def cmd_promote(a):
+    """Make a phase's OpenRouter replay its output (no network), so gates and later phases use it."""
+    run = Run(a.run_dir)
+    d = run.phase_dir(a.phase, a.variant)
+    if a.chunk is not None:
+        d = d / f"chunk{a.chunk}"
+    src = d / "replay" / "output.md"
+    if not src.exists():
+        sys.exit(f"no replay output at {src}; run `replay` first")
+    tel = json.loads((d / "replay" / "telemetry.json").read_text())
+    (d / "output.md").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "backend.json").write_text(json.dumps({k: tel.get(k) for k in ("backend", "model_actual", "notes")}, indent=2))
+    print(f"promoted {src} -> {d / 'output.md'} (backend.json records openrouter / {tel.get('model_actual')})")
+
+
 def cmd_index(a):
     run = Run(a.run_dir)
     row = {
@@ -684,6 +819,17 @@ def main():
     c = sub("gate", "run prod's gates (and the harness's checks) on a phase output")
     c.add_argument("phase", choices=PHASES)
     c.add_argument("--variant", **variant)
+    c = sub("replay", "fallback: send a captured prompt, unchanged, to OpenRouter (costs money)")
+    c.add_argument("phase", choices=PHASES)
+    c.add_argument("--variant", **variant)
+    c.add_argument("--chunk", type=int, help="chunk index for a chunked formatter")
+    c.add_argument("--model", help="explicit OpenRouter model id (default: the captured/prod model)")
+    c.add_argument("--newest", action="store_true", help="newest model in the same family, via prod's roster")
+    c.add_argument("--max-tokens", type=int, help="override prod's backend max_tokens")
+    c = sub("promote", "make a phase's replay/output.md its output.md (no network)")
+    c.add_argument("phase", choices=PHASES)
+    c.add_argument("--variant", **variant)
+    c.add_argument("--chunk", type=int, help="chunk index for a chunked formatter")
     sub("index", "print an index row for the private cohort")
     a = p.parse_args()
     # Resolve every local path against the caller's cwd now: load_code() later chdirs into the
@@ -703,6 +849,8 @@ def main():
         "brief": cmd_brief,
         "merge": cmd_merge,
         "gate": cmd_gate,
+        "replay": cmd_replay,
+        "promote": cmd_promote,
         "index": cmd_index,
     }[a.cmd](a)
 

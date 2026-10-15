@@ -16,7 +16,7 @@ Drive one caption file through Cardigan's real prompt builders and gates, with e
 Ask with `AskUserQuestion`. If you're a subagent without it, stop and return the open questions to your caller.
 
 1. **Code under test.** Use plain `main`, or `main` plus specific open fix PRs (`gh pr list --state open`). Plain `main` is always exported too, as the comparison tree.
-2. **Model calls.** Default to subagents only. Make OpenRouter calls only if asked; they cost money, and the key comes from `get-secret.sh OPENROUTER_API_KEY`.
+2. **Backend.** The default is `subagent` for every phase: local, free, and it produces self-reports. `openrouter` (`harness.py replay`) is the per-phase **fallback**. It is prod's real path, it records `finish_reason` and reasoning-token telemetry, and it costs money (key via `get-secret.sh OPENROUTER_API_KEY`). Confirm the operator is OK with paid fallback calls before using it.
 3. **Media ID.** Use it if known (it drives the SST lookup). Archival files often have none.
 4. **Write-up destination.** The run data always goes private. Ask whether findings also become a public docs PR, issues, or both.
 
@@ -53,8 +53,15 @@ Use one command per Bash call, with literal absolute paths: no shell variables, 
    - Read `selfreport.md`. Most findings come from these: instruction conflicts, guesses, words the model changed.
 6. **QA gate, after timestamp.** Run `harness.py gate --run-dir <unit> validator` on the stack unit. Copy the stack's phase outputs into the main unit and gate it too, to see whether main's routing differs. The result is COMPLETED, PROD WOULD PAUSE, or PROD WOULD ESCALATE.
    - On escalate: recapture the flagged phases with `--variant esc --model <next tier>` and **no `--flags`**, because prod's escalation carries none (#450). Then dispatch, recapture and dispatch the validator with `--variant esc`, and gate `--variant esc`.
-7. **Supervisor interventions come only after the prod-faithful result is recorded.** When a deliverable is unusable (for example, one timestamp chapter on a 28-minute piece), copy the captured prompt into `<phase>/supervised/`, make the **smallest** edit, dispatch, and label it `SUP-n` in RUNLOG with the exact change. That edit *is* the proposed fix.
-8. **Supplementary experiments** (forced chunking with `--force-max-tokens 6000 --variant forced-chunk`, main's validator prompt over the stack's outputs, …) are labelled as not-prod in RUNLOG. Variant gates never overwrite the prod-path `completeness.json`.
+7. **When a subagent can't run a phase** (a safety-classifier stop, `stop_reason: refusal`, or a platform notice; seen on routine IWP transcripts):
+   - Record the stop verbatim in RUNLOG and keep the subagent's transcript path as evidence.
+   - At most **one identical** retry. If it stops again, ask the operator whether to escalate the model tier or fall back to OpenRouter for that phase.
+   - **Never reword, summarise, split or re-chunk the input to get past a stop.** That is evading the classifier, not retrying, and it would also no longer test prod's prompt.
+   - Fallback: `harness.py replay --run-dir <unit> <phase> [--chunk N] [--newest]` sends the captured prompt unchanged. `--newest` picks the family's newest model through prod's roster. Read `replay/telemetry.json`: `finish_reason` (`length` means truncated), `reasoning_tokens` and `headroom_tokens`, plus `notes`. Some newer models reject prod's `reasoning: {enabled: false}` with a 400. `replay` then resends with reasoning on and says so in `notes`, which is a finding (prod's control isn't replayable on that model).
+   - Then `harness.py promote --run-dir <unit> <phase> [--chunk N]` makes `replay/output.md` the phase output for gates and later phases, and writes `backend.json`.
+   - An OpenRouter phase has no self-report. Label the run **mixed-backend** in RUNLOG and FINDINGS, with the backend and model of every phase.
+8. **Supervisor interventions come only after the prod-faithful result is recorded.** When a deliverable is unusable (for example, one timestamp chapter on a 28-minute piece), copy the captured prompt into `<phase>/supervised/`, make the **smallest** edit, dispatch, and label it `SUP-n` in RUNLOG with the exact change. That edit *is* the proposed fix.
+9. **Supplementary experiments** (forced chunking with `--force-max-tokens 6000 --variant forced-chunk`, main's validator prompt over the stack's outputs, …) are labelled as not-prod in RUNLOG. Variant gates never overwrite the prod-path `completeness.json`.
 
 ### Intake legend
 
@@ -103,4 +110,4 @@ If the operator wants the metadata itself, give it in chat with corrections note
 
 - Subagent wall time is about 10× an API call.
 - Subagents have tools prod's model lacks (one counted characters with Python), so don't read timing or counting accuracy as prod behaviour.
-- With no OpenRouter calls there is no `finish_reason` or reasoning-token data.
+- Subagent phases have no `finish_reason` or reasoning-token data; only `replay` phases do. Say which phases ran on which backend.
