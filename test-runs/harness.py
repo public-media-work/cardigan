@@ -792,6 +792,12 @@ def cmd_promote(a):
         sys.exit(
             f"replay finish_reason={tel.get('finish_reason')!r}, not 'stop'; refusing (use --force to promote anyway)"
         )
+    stale = d / "selfreport.md"
+    if stale.exists():  # left by a stopped subagent: keep it as evidence, but not as this output's report
+        stale.rename(d / "selfreport.stopped-subagent.md")
+        print(
+            "moved a subagent's selfreport.md aside -> selfreport.stopped-subagent.md (it doesn't describe this output)"
+        )
     (d / "output.md").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     keep = ("backend", "model_actual", "finish_reason", "reasoning_sent", "notes")
     (d / "backend.json").write_text(json.dumps({k: tel.get(k) for k in keep}, indent=2))
