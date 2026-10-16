@@ -191,6 +191,44 @@ the identity gate passing and `_merge_snippet` leaving unrelated fields alone.
 `description_blocks.py` is the reference implementation B4 should port rather than
 reinvent.
 
+### The review harness is built — and the `file://` assumption in the plan was wrong
+
+`build_review.py` renders one page per video that embeds the player and makes each
+boundary clickable: seek with a 2s pre-roll, nudge ±1s/±5s, snap-to-playhead, live
+re-validation, copy-corrected-block. Verified working against a real video
+(`H7leMhVlWww`) — seek, snap, nudge, the verdict flip and the row highlighting all
+behave.
+
+**The plan said "write a self-contained local HTML file and `open` it." That does not
+work.** Chrome gives every `file:` URL its own opaque origin, so the IFrame Player
+API's postMessage handshake has nothing to trust and the embed errors:
+
+```
+Unsafe attempt to load URL file:///... from frame with URL file:///...
+'file:' URLs are treated as unique security origins.
+```
+
+Seek does nothing. `--open` now serves the directory on loopback instead. **Anyone
+building a video-review surface should assume the same** — the file stays local and
+disposable, but it needs a real origin. The one consolation: the page's
+embedding-disabled fallback caught it and showed youtube.com `&t=` links, so it
+degraded honestly rather than looking broken for no visible reason. That fallback was
+written for a different failure and paid for itself on this one.
+
+**A second, smaller trap:** the IFrame API stamps `width`/`height` **attributes** on
+the element it creates. A non-auto height makes the browser ignore `aspect-ratio`, so
+the player letterboxes at 360px however wide the column is. `height:auto` in author
+CSS outranks the presentational hint.
+
+**Two validators, one rule set.** The page has to re-check YouTube's rendering rules
+in JavaScript, which means a second copy of logic that already exists in Python — and
+two copies of a rule drift. Rather than trusting a comment, the tests lift the JS out
+of the emitted page, run it under `node` against the same fixtures the Python
+validator sees, and require identical verdicts *and* identical reason strings. Cheap
+(one `subprocess.run`) and it makes drift a test failure instead of a silent
+divergence between what the reviewer approves and what the writer enforces. Worth
+copying wherever B4 ends up mirroring a rule into a browser.
+
 ### Escaping — checked, no problem, but worth knowing
 
 The `videos.update` **response** echoes `snippet.description` HTML-escaped (`Here
