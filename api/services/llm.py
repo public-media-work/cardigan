@@ -168,6 +168,40 @@ class OutputTruncatedError(Exception):
         self.cost = cost
 
 
+class ModelRefusalError(OutputTruncatedError):
+    """The model's safety classifier declined the request (``stop_reason == "refusal"``).
+
+    Claude 5.x and Fable models carry streaming classifiers that answer with a
+    normal 200 whose content is empty or partial. It is not a length stop and
+    not reasoning eating the cap, so the truncation remedy ("raise max_tokens")
+    would be wrong. Subclasses ``OutputTruncatedError`` so every existing route
+    (pause instead of fail, booking the billed spend, optional phases, chunks)
+    applies unchanged; the worker only words the pause differently.
+
+    ``category`` is Anthropic's ``stop_details.category`` when the provider
+    passes it through (e.g. ``reasoning_extraction``, ``cyber``), else None.
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        backend: Optional[str] = None,
+        output_tokens: int = 0,
+        cost: float = 0.0,
+        category: Optional[str] = None,
+    ):
+        super().__init__(detail, backend=backend, output_tokens=output_tokens, cost=cost)
+        self.category = category
+
+
+def _refusal_detail(model: str, category: Optional[str], explanation: Optional[str]) -> str:
+    """One operator-facing line for a classifier refusal."""
+    detail = f"The model's safety classifier declined this request (model={model}, category={category or 'unknown'})."
+    if explanation:
+        detail += f" Provider explanation: {explanation}"
+    return detail
+
+
 def _parse_unavailable_503(response: "httpx.Response") -> tuple[str, Optional[int], bool]:
     """Extract (detail, retry_after_s, retryable) from a 503 response.
 
@@ -984,6 +1018,23 @@ class LLMClient:
         finish_reason = choice.get("finish_reason")
         content = choice.get("message", {}).get("content")
 
+        # A classifier refusal is also a 200, with empty or partial content. Check
+        # it before the length and null-content checks, which would otherwise
+        # misreport it as truncation with the wrong remedy. OpenRouter normalises
+        # finish_reason to "content_filter" and keeps the provider's own value in
+        # native_finish_reason; either one is enough.
+        if choice.get("native_finish_reason") == "refusal" or finish_reason == "content_filter":
+            details = choice.get("stop_details") or data.get("stop_details") or {}
+            if not isinstance(details, dict):
+                details = {}
+            raise ModelRefusalError(
+                _refusal_detail(actual_model, details.get("category"), details.get("explanation")),
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+                cost=cost,
+                category=details.get("category"),
+            )
+
         if finish_reason == "length":
             raise OutputTruncatedError(
                 f"Provider stopped generation early (finish_reason='length') after "
@@ -1160,6 +1211,21 @@ class LLMClient:
         total_tokens = input_tokens + output_tokens
 
         cost = calculate_cost(model, input_tokens, output_tokens)
+
+        # Classifier refusal: a 200 with stop_reason "refusal" and empty (or
+        # partial, to be discarded) content — indexing content[0] would crash.
+        if data.get("stop_reason") == "refusal":
+            details = data.get("stop_details") or {}
+            if not isinstance(details, dict):
+                details = {}
+            raise ModelRefusalError(
+                _refusal_detail(model, details.get("category"), details.get("explanation")),
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+                cost=cost,
+                category=details.get("category"),
+            )
+
         content = data["content"][0]["text"]
 
         return LLMResponse(

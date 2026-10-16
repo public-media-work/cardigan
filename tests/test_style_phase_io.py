@@ -46,7 +46,7 @@ Wisconsin Governor Signs New Budget Bill
 
 **Keywords Included:** budget, Wisconsin, governor
 
-**Reasoning:**
+**Why:**
 Leads with the primary keyword and stays well under the limit.
 
 **Alternatives:**
