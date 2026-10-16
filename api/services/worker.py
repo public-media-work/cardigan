@@ -39,6 +39,7 @@ from api.services.llm import (
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
+    ModelRefusalError,
     OutputTruncatedError,
     end_run_tracking,
     get_llm_client,
@@ -1047,13 +1048,19 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     return
 
                 if phase_result.get("output_truncated"):
-                    # Provider cut the output at its cap. Actionable, so pause with the
-                    # remedy rather than raising into a job-level failure (#405).
+                    # Provider cut the output at its cap (or its classifier refused).
+                    # Actionable, so pause with the remedy rather than raising into a
+                    # job-level failure (#405).
                     logger.warning(
-                        "Job paused — provider truncated the phase output",
+                        "Job paused — "
+                        + (
+                            "model refused the phase request"
+                            if phase_result.get("model_refusal")
+                            else "provider truncated the phase output"
+                        ),
                         extra={"job_id": job_id, "phase": phase_name, "project_name": project_name},
                     )
-                    await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                    await self._pause_for_terminal_output_problem(job_id, phase_result)
                     return
 
                 if phase_result.get("credit_exhausted"):
@@ -1294,7 +1301,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     # would ship a partial optional artifact as if it were complete,
                     # which is the silent-success class #403 exists to close (#405).
                     if phase_result.get("output_truncated"):
-                        await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                        await self._pause_for_terminal_output_problem(job_id, phase_result)
                         return
 
                     # Credit exhaustion is NEVER non-fatal, even in an optional
@@ -2351,6 +2358,33 @@ Extract any name or spelling corrections that should be added to the glossary. S
         if run_summary:
             await update_job_status(job_id, JobStatus.paused, actual_cost=run_summary["total_cost"])
 
+    async def _pause_for_refusal(self, job_id: int, detail: str) -> None:
+        """Terminal pause for a model safety-classifier refusal (stop_reason "refusal").
+
+        Mirrors ``_pause_for_output_truncation`` (paused, retry count untouched,
+        spend booked) but with the right remedy: re-sending the same request to
+        the same model usually refuses again, and more output budget does nothing.
+        """
+        await pause_and_suggest(
+            job_id,
+            trigger="refusal",
+            message=(
+                f"{detail} Retrying on the same model usually refuses again — retry with a "
+                f"different model, and if it looks like a false positive, report it to the "
+                f"provider with the request ID from the job's logs."
+            ).strip(),
+        )
+        run_summary = await end_run_tracking(job_id)
+        if run_summary:
+            await update_job_status(job_id, JobStatus.paused, actual_cost=run_summary["total_cost"])
+
+    async def _pause_for_terminal_output_problem(self, job_id: int, phase_result: Dict[str, Any]) -> None:
+        """Route an ``output_truncated`` phase result to the refusal or truncation pause."""
+        if phase_result.get("model_refusal"):
+            await self._pause_for_refusal(job_id, phase_result.get("error") or "")
+        else:
+            await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+
     async def _pause_for_credit(self, job_id: int) -> None:
         """Terminal pause for OpenRouter credit exhaustion (Trigger B, #243).
 
@@ -2607,18 +2641,27 @@ Extract any name or spelling corrections that should be added to the glossary. S
             # credit exhaustion: caught BEFORE the generic handler so it pauses
             # with a remedy instead of raising, which would mark the job failed
             # and leave the operator without a model picker (#406).
+            # ModelRefusalError (a classifier refusal) rides the same route and is
+            # only tagged here so the pause message names the right cause.
+            refused = isinstance(e, ModelRefusalError)
             logger.warning(
-                "Phase halted — provider truncated the output",
+                (
+                    "Phase halted — model refused the request"
+                    if refused
+                    else "Phase halted — provider truncated the output"
+                ),
                 extra={
                     "job_id": job_id,
                     "phase": phase_name,
                     "backend": e.backend,
                     "output_tokens": e.output_tokens,
+                    "refusal_category": getattr(e, "category", None),
                 },
             )
             return {
                 "success": False,
                 "output_truncated": True,
+                "model_refusal": refused,
                 "error": e.detail,
                 # The provider billed for what it generated before cutting us off.
                 # chat() never reached tracker.add_call(), so booking it here is
