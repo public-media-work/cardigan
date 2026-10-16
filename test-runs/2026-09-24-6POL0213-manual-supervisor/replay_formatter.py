@@ -6,6 +6,7 @@ Usage:
 
 Key comes from `get-secret.sh OPENROUTER_API_KEY` (never hard-coded, never printed).
 """
+
 import asyncio
 import json
 import os
@@ -67,7 +68,15 @@ def run(prompt_dir: Path, model: str):
     usage = data.get("usage", {})
     if content is None:
         print("CONTENT IS NONE. choice keys:", list(choice.keys()), "message keys:", list(choice["message"].keys()))
-        print("finish_reason:", choice.get("finish_reason"), "native:", choice.get("native_finish_reason"), "error:", data.get("error"), choice.get("error"))
+        print(
+            "finish_reason:",
+            choice.get("finish_reason"),
+            "native:",
+            choice.get("native_finish_reason"),
+            "error:",
+            data.get("error"),
+            choice.get("error"),
+        )
         print("usage:", usage)
         return
     words = count_content_words(content)
@@ -75,7 +84,9 @@ def run(prompt_dir: Path, model: str):
     tel = {
         "reasoning_tokens": reasoning_tokens,
         "content_tokens": (usage.get("completion_tokens") or 0) - (reasoning_tokens or 0),
-        "content_tokens_per_content_word": round(((usage.get("completion_tokens") or 0) - (reasoning_tokens or 0)) / words, 3) if words else None,
+        "content_tokens_per_content_word": (
+            round(((usage.get("completion_tokens") or 0) - (reasoning_tokens or 0)) / words, 3) if words else None
+        ),
         "model_requested": model,
         "model_actual": data.get("model"),
         "provider": data.get("provider"),
@@ -89,7 +100,9 @@ def run(prompt_dir: Path, model: str):
         "output_content_words": words,
         "tokens_per_content_word": round(usage.get("completion_tokens", 0) / words, 3) if words else None,
         "raw_output_words": len(content.split()),
-        "tokens_per_raw_word": round(usage.get("completion_tokens", 0) / len(content.split()), 3) if content.split() else None,
+        "tokens_per_raw_word": (
+            round(usage.get("completion_tokens", 0) / len(content.split()), 3) if content.split() else None
+        ),
     }
     (out_dir / "output.md").write_text(content, encoding="utf-8")
     (out_dir / "telemetry.json").write_text(json.dumps(tel, indent=2))
