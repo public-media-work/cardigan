@@ -32,6 +32,28 @@ jobs:
       - name: Black check
         run: black --check .
 
+  lock-check:
+    name: Lockfile in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        run: pip install uv==0.12.17
+      - name: Recompile against the committed lock
+        # uv prefers the versions already pinned in the output file, so this only
+        # changes the lock when requirements.txt / requirements-dev.txt demand it.
+        # A diff means someone edited the ranges without recompiling — fail loudly
+        # rather than let the images and the native box drift from the ranges.
+        run: |
+          cp requirements.lock /tmp/requirements.lock
+          uv pip compile requirements.txt requirements-dev.txt --universal --python-version 3.13 \
+            --custom-compile-command "uv pip compile requirements.txt requirements-dev.txt --universal --python-version 3.13 -o requirements.lock" \
+            -o /tmp/requirements.lock
+          diff -u requirements.lock /tmp/requirements.lock
+
   lint-frontend:
     name: Frontend Lint
     runs-on: ubuntu-latest
@@ -65,7 +87,9 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
+        # requirements.lock is compiled from requirements.txt + requirements-dev.txt,
+        # so tests run against exactly the versions the images and native box install.
+        run: pip install -r requirements.lock
       - name: Create required directories
         run: mkdir -p OUTPUT transcripts logs
       - name: Run database migrations
@@ -109,7 +133,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.lock
       - name: Run Alembic migrations
         run: alembic upgrade head
       - name: Verify tables created
