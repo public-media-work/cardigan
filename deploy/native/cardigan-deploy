@@ -81,6 +81,10 @@ for arg in "$@"; do
   esac
 done
 [[ -n "$REF" ]] || refuse "usage: cardigan-deploy [--force] <sha|tag>"
+# One deploy at a time: a second run (e.g. re-run after a dropped session)
+# must not interleave checkout, npm ci and migrations with one still going.
+exec 9> /run/lock/cardigan-deploy
+flock -n 9 || refuse "another cardigan-deploy is running (see $APP/LAST_ATTEMPT)"
 cd "$APP"
 
 # The rollback target is the last SUCCESSFUL deploy. HEAD can't be trusted: a

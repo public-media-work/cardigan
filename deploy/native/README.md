@@ -33,7 +33,7 @@ How Cardigan V4 runs on **cardigan02**: an unprivileged Debian 13 LXC with syste
 ## Deploying
 
 ```bash
-ssh cardigan02 cardigan-deploy "$(git rev-parse origin/main)"
+ssh -t cardigan02 tmux new -A -s deploy "'cardigan-deploy $(git rev-parse origin/main); echo \"[exit \$?] press enter to close\"; read'"
 ```
 
 `cardigan-deploy` only accepts an exact commit or tag; branch names are refused. It refuses to run while jobs are in progress unless you pass `--force`. It stops and reports failure the moment any step fails. The steps:
@@ -47,7 +47,15 @@ ssh cardigan02 cardigan-deploy "$(git rev-parse origin/main)"
 
 **Rollback:** `cardigan-deploy <previous sha>`. The previous sha is the last *successful* deploy: it is printed on failure and stored in `DEPLOYED_SHA`. Commits from before the native deploy (no `requirements.lock` or `deploy/native/`) are refused, since they can't run under this layout. If the api failed to come back, the hint says `cardigan-deploy --force <sha>`, in case the api is up but not answering and the rollback's pre-flight can't read the queue.
 
-**Run it under tmux:** `ssh -t cardigan02 tmux new -A -s deploy cardigan-deploy <sha>`. Reattach with `ssh -t cardigan02 tmux attach -t deploy`. If a session drops mid-deploy, the worker may be stopped. Re-run the same command. `LAST_ATTEMPT` showing `status=started` with no later result means a run died partway. The script warns when it isn't running under tmux or screen.
+**Run it under tmux, as root** (the same ssh login `sync-native-secrets.sh` uses):
+
+```bash
+ssh -t cardigan02 tmux new -A -s deploy 'cardigan-deploy <sha>; echo "[exit $?] press enter to close"; read'
+```
+
+The trailing `echo; read` keeps the window open after the script exits, so `DEPLOY FAILED` and the rollback hint stay on screen until you press enter. Reattach with `ssh -t cardigan02 tmux attach -t deploy`.
+
+If a session drops mid-deploy, reattach: the deploy keeps running inside tmux. If it died, the worker may be stopped, so run the deploy again. `tmux new -A` reattaches to an existing `deploy` session instead of starting a new one, so if you land on a finished session, press enter to close it and re-run. `LAST_ATTEMPT` showing `status=started` with no later result means a run died partway. The script warns when it isn't under tmux or screen, and refuses to start while another deploy holds its lock.
 
 `cardigan-deploy` installs itself to `/usr/local/sbin` as part of each run, so a change to the script takes effect on the deploy *after* the one that ships it.
 
