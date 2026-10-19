@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cardigan-deploy — deploy one exact commit to a native Cardigan box (#470).
 #
-#   sudo cardigan-deploy [--force] <sha|tag>     (--force may go anywhere)
+#   cardigan-deploy [--force] <sha|tag>          (as root; see README for tmux)     (--force may go anywhere)
 #
 # Every step verifies its own outcome and the script exits non-zero the moment
 # one fails (#442: no silent deploys) -- an ERR trap catches any step without
@@ -64,7 +64,7 @@ as_app_env() {
     'set -a; . /etc/cardigan/cardigan.env; [ -r /etc/cardigan/secrets.env ] && . /etc/cardigan/secrets.env; set +a; cd /opt/cardigan; exec "$@"' _ "$@"
 }
 
-[[ $EUID -eq 0 ]] || refuse "run as root (sudo cardigan-deploy <ref>)"
+[[ $EUID -eq 0 ]] || refuse "run as root (see deploy/native/README.md)"
 
 # A dropped ssh session mid-deploy can kill this script while the worker is
 # stopped. That state is safe (no jobs against a half-migrated schema), and
@@ -83,7 +83,7 @@ done
 [[ -n "$REF" ]] || refuse "usage: cardigan-deploy [--force] <sha|tag>"
 # One deploy at a time: a second run (e.g. re-run after a dropped session)
 # must not interleave checkout, npm ci and migrations with one still going.
-exec 9> /run/lock/cardigan-deploy
+{ exec 9> /run/lock/cardigan-deploy; } 2>/dev/null || refuse "cannot open /run/lock/cardigan-deploy"
 flock -n 9 || refuse "another cardigan-deploy is running (see $APP/LAST_ATTEMPT)"
 cd "$APP"
 

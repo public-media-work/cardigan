@@ -50,10 +50,10 @@ ssh -t cardigan02 tmux new -A -s deploy "'cardigan-deploy $(git rev-parse origin
 **Run it under tmux, as root** (the same ssh login `sync-native-secrets.sh` uses):
 
 ```bash
-ssh -t cardigan02 tmux new -A -s deploy 'cardigan-deploy <sha>; echo "[exit $?] press enter to close"; read'
+ssh -t cardigan02 tmux new -A -s deploy "'cardigan-deploy <sha>; echo \"[exit \$?] press enter to close\"; read'"
 ```
 
-The trailing `echo; read` keeps the window open after the script exits, so `DEPLOY FAILED` and the rollback hint stay on screen until you press enter. Reattach with `ssh -t cardigan02 tmux attach -t deploy`.
+Keep the nested quoting exactly as shown: ssh joins its arguments into one string for the remote shell, so the inner single quotes are what keep the whole command inside tmux. The trailing `echo; read` keeps the window open after the script exits, so `DEPLOY FAILED` and the rollback hint stay on screen until you press enter. Reattach with `ssh -t cardigan02 tmux attach -t deploy`.
 
 If a session drops mid-deploy, reattach: the deploy keeps running inside tmux. If it died, the worker may be stopped, so run the deploy again. `tmux new -A` reattaches to an existing `deploy` session instead of starting a new one, so if you land on a finished session, press enter to close it and re-run. `LAST_ATTEMPT` showing `status=started` with no later result means a run died partway. The script warns when it isn't under tmux or screen, and refuses to start while another deploy holds its lock.
 
