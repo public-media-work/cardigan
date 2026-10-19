@@ -47,7 +47,7 @@ ssh cardigan02 cardigan-deploy "$(git rev-parse origin/main)"
 
 **Rollback:** `cardigan-deploy <previous sha>`. The previous sha is the last *successful* deploy: it is printed on failure and stored in `DEPLOYED_SHA`. Commits from before the native deploy (no `requirements.lock` or `deploy/native/`) are refused, since they can't run under this layout. If the api failed to come back, the hint says `cardigan-deploy --force <sha>`, in case the api is up but not answering and the rollback's pre-flight can't read the queue.
 
-**Dropped connections:** `cardigan-deploy` re-runs itself detached (`setsid`) and writes each run to `/var/log/cardigan/deploy-<timestamp>.log`. The terminal only follows that log. If your ssh session drops mid-deploy, the deploy still finishes; check the log, or `LAST_ATTEMPT` (`status=started` means it is still running or was killed). Migrations only go forward, so to undo a schema change, restore `ocean/cardigan` from a ZFS snapshot.
+**Run it under tmux:** `ssh -t cardigan02 tmux new -A -s deploy cardigan-deploy <sha>`. Reattach with `ssh -t cardigan02 tmux attach -t deploy`. If a session drops mid-deploy, the worker may be stopped. Re-run the same command. `LAST_ATTEMPT` showing `status=started` with no later result means a run died partway. The script warns when it isn't running under tmux or screen.
 
 `cardigan-deploy` installs itself to `/usr/local/sbin` as part of each run, so a change to the script takes effect on the deploy *after* the one that ships it.
 

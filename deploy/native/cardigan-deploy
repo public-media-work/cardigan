@@ -66,24 +66,11 @@ as_app_env() {
 
 [[ $EUID -eq 0 ]] || refuse "run as root (sudo cardigan-deploy <ref>)"
 
-# Survive a dropped ssh session. The deploy stops the worker for minutes; a
-# SIGHUP or SIGPIPE from a closed terminal would kill it without going through
-# die(), leaving the worker down and no record. So the real run is re-executed
-# in its own session (setsid, no terminal) writing to a per-run log, and this
-# foreground process only follows that log. If the connection drops, only the
-# tail dies and the deploy carries on; read the log or LAST_ATTEMPT afterwards.
-if [[ -z "${CARDIGAN_DEPLOY_LOG:-}" ]]; then
-  CARDIGAN_DEPLOY_LOG="/var/log/cardigan/deploy-$(date -u +%Y%m%dT%H%M%SZ).log"
-  export CARDIGAN_DEPLOY_LOG
-  install -d -m 0755 /var/log/cardigan
-  : > "$CARDIGAN_DEPLOY_LOG"
-  trap - ERR
-  setsid "$(readlink -f "$0")" "$@" < /dev/null >> "$CARDIGAN_DEPLOY_LOG" 2>&1 &
-  child=$!
-  echo "deploy running as pid $child; log: $CARDIGAN_DEPLOY_LOG"
-  tail -n +1 -f --pid="$child" "$CARDIGAN_DEPLOY_LOG" || true
-  rc=0; wait "$child" || rc=$?
-  exit "$rc"
+# A dropped ssh session mid-deploy can kill this script while the worker is
+# stopped. That state is safe (no jobs against a half-migrated schema), and
+# re-running the same command recovers it. Running under tmux avoids it.
+if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+  echo "warning: not in tmux/screen; a dropped ssh session can leave the worker stopped (see README)" >&2
 fi
 REF=""; FORCE=""
 for arg in "$@"; do
@@ -132,9 +119,9 @@ if systemctl is-active --quiet cardigan-api; then
 fi
 
 step "Check out and install"
-# From here on the box changes. Record the attempt now, so a run killed outright
-# (not via die) still leaves a trace instead of the previous run's status.
-printf 'sha=%s\nstatus=started\nlog=%s\nat=%s\n' "$SHA" "$CARDIGAN_DEPLOY_LOG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LAST_ATTEMPT"
+# From here on the box changes. Record the attempt now: a later `started` with
+# no `ok` or `failed` means the run died partway (e.g. a dropped session).
+printf 'sha=%s\nstatus=started\nat=%s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LAST_ATTEMPT"
 as_app git checkout --quiet --detach "$SHA"
 as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check -r requirements.lock
 as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check --no-deps -e .

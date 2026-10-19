@@ -31,7 +31,7 @@ ETC=/etc/cardigan
 echo "==> apt packages"
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  python3 python3-venv ffmpeg nginx nodejs npm git sqlite3 gettext-base rsync curl ca-certificates >/dev/null
+  python3 python3-venv ffmpeg nginx nodejs npm git sqlite3 gettext-base rsync curl ca-certificates tmux >/dev/null
 python3 -c 'import sys; assert sys.version_info[:2] >= (3, 13), sys.version' \
   || { echo "Python >= 3.13 required (pyproject.toml); Debian 13 ships 3.13" >&2; exit 1; }
 
