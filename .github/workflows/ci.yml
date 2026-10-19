@@ -42,6 +42,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install uv
+        # Recompile the lock locally with this same uv version: output format
+        # differs between uv releases, so a different version shows up here as a
+        # spurious diff. To fix a failing check (e.g. a Dependabot bump to
+        # requirements.txt), run the command in requirements.lock's header on
+        # the branch and commit the result.
         run: pip install uv==0.12.17
       - name: Recompile against the committed lock
         # uv prefers the versions already pinned in the output file, so this only
