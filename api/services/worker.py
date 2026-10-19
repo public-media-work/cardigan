@@ -40,6 +40,7 @@ from api.services.llm import (
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
+    ModelRefusalError,
     OutputTruncatedError,
     end_run_tracking,
     get_llm_client,
@@ -1050,13 +1051,19 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     return
 
                 if phase_result.get("output_truncated"):
-                    # Provider cut the output at its cap. Actionable, so pause with the
-                    # remedy rather than raising into a job-level failure (#405).
+                    # Provider cut the output at its cap (or its classifier refused).
+                    # Actionable, so pause with the remedy rather than raising into a
+                    # job-level failure (#405).
                     logger.warning(
-                        "Job paused — provider truncated the phase output",
+                        "Job paused — "
+                        + (
+                            "model refused the phase request"
+                            if phase_result.get("model_refusal")
+                            else "provider truncated the phase output"
+                        ),
                         extra={"job_id": job_id, "phase": phase_name, "project_name": project_name},
                     )
-                    await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                    await self._pause_for_terminal_output_problem(job_id, phase_result)
                     return
 
                 if phase_result.get("credit_exhausted"):
@@ -1297,7 +1304,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     # would ship a partial optional artifact as if it were complete,
                     # which is the silent-success class #403 exists to close (#405).
                     if phase_result.get("output_truncated"):
-                        await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+                        await self._pause_for_terminal_output_problem(job_id, phase_result)
                         return
 
                     # Credit exhaustion is NEVER non-fatal, even in an optional
@@ -1463,6 +1470,59 @@ Extract any name or spelling corrections that should be added to the glossary. S
         except Exception:
             return None
         return {"enabled": False} if backend_type == "openrouter" else None
+
+    def _chunk_wrapper_instructions(self, chunk_index: int, total_chunks: int) -> str:
+        """Header/footer duties for one chunk of a chunked formatter run (FMT-1).
+
+        The document wrapper is written by exactly one chunk at each end, and
+        every chunk has to be told which. Chunk 0's prompt previously said
+        "Format only the dialogue in this section", contradicting the system
+        prompt's mandatory header, so the header was dropped; and no chunk was
+        ever told to emit the Status footer. ``merge_formatter_chunks`` keeps a
+        Status line only if the last chunk wrote one, so the merged document
+        came out with neither -- and passed every deterministic gate.
+        """
+        parts = []
+        if chunk_index == 0:
+            parts.append(
+                "WRAPPER: Write the metadata header block (# Formatted Transcript, "
+                "Project, Program, Duration, Date Processed) exactly as the system "
+                "prompt specifies, THEN format this section's dialogue. The header "
+                "is required even though this is only part of the transcript."
+            )
+        if chunk_index == total_chunks - 1:
+            parts.append(
+                "WRAPPER: This is the FINAL section. After the last line of dialogue, "
+                "end the document with the Status footer the system prompt specifies."
+            )
+        return ("\n\n".join(parts) + "\n\n") if parts else ""
+
+    def _retry_context_section(self, context: Dict[str, Any]) -> str:
+        """Validator flags and editorial feedback to carry into a re-run (RETRY-1).
+
+        The chunked formatter built its own prompt and never read these, so a
+        retry or escalation of a chunked job re-sent the identical prompt to
+        another model and the operator's typed feedback was silently dropped.
+        On main, any episode over ~3,000 dialogue words chunks.
+
+        ``_previous_output`` is deliberately NOT included: it is the whole
+        previous document, and repeating it on every chunk would multiply the
+        input by the chunk count. The flags and the feedback are what a re-run
+        has to act on; each chunk already carries its own source text.
+        """
+        out = ""
+        flags = context.get("_validation_flags")
+        if flags:
+            out += "\n\n## Validation Issues from Previous Attempt\n\n"
+            out += "The previous output was flagged for these issues. Address each one:\n\n"
+            for flag in flags:
+                out += f"- {flag}\n"
+        feedback = context.get("_editorial_feedback")
+        if feedback:
+            out += "\n\n## Editorial Feedback\n\n"
+            out += "An editor reviewed the previous output and asked for these changes:\n\n"
+            out += f"{feedback}\n"
+        return out
 
     def _phase_attempt_count(self, job, phase_name: str) -> int:
         """How many times this phase has now run, counting the current attempt.
@@ -2327,6 +2387,33 @@ Extract any name or spelling corrections that should be added to the glossary. S
         if run_summary:
             await update_job_status(job_id, JobStatus.paused, actual_cost=run_summary["total_cost"])
 
+    async def _pause_for_refusal(self, job_id: int, detail: str) -> None:
+        """Terminal pause for a model safety-classifier refusal (stop_reason "refusal").
+
+        Mirrors ``_pause_for_output_truncation`` (paused, retry count untouched,
+        spend booked) but with the right remedy: re-sending the same request to
+        the same model usually refuses again, and more output budget does nothing.
+        """
+        await pause_and_suggest(
+            job_id,
+            trigger="refusal",
+            message=(
+                f"{detail} Retrying on the same model usually refuses again — retry with a "
+                f"different model, and if it looks like a false positive, report it to the "
+                f"provider with the request ID from the job's logs."
+            ).strip(),
+        )
+        run_summary = await end_run_tracking(job_id)
+        if run_summary:
+            await update_job_status(job_id, JobStatus.paused, actual_cost=run_summary["total_cost"])
+
+    async def _pause_for_terminal_output_problem(self, job_id: int, phase_result: Dict[str, Any]) -> None:
+        """Route an ``output_truncated`` phase result to the refusal or truncation pause."""
+        if phase_result.get("model_refusal"):
+            await self._pause_for_refusal(job_id, phase_result.get("error") or "")
+        else:
+            await self._pause_for_output_truncation(job_id, phase_result.get("error") or "")
+
     async def _pause_for_credit(self, job_id: int) -> None:
         """Terminal pause for OpenRouter credit exhaustion (Trigger B, #243).
 
@@ -2598,18 +2685,27 @@ Extract any name or spelling corrections that should be added to the glossary. S
             # credit exhaustion: caught BEFORE the generic handler so it pauses
             # with a remedy instead of raising, which would mark the job failed
             # and leave the operator without a model picker (#406).
+            # ModelRefusalError (a classifier refusal) rides the same route and is
+            # only tagged here so the pause message names the right cause.
+            refused = isinstance(e, ModelRefusalError)
             logger.warning(
-                "Phase halted — provider truncated the output",
+                (
+                    "Phase halted — model refused the request"
+                    if refused
+                    else "Phase halted — provider truncated the output"
+                ),
                 extra={
                     "job_id": job_id,
                     "phase": phase_name,
                     "backend": e.backend,
                     "output_tokens": e.output_tokens,
+                    "refusal_category": getattr(e, "category", None),
                 },
             )
             return {
                 "success": False,
                 "output_truncated": True,
+                "model_refusal": refused,
                 "error": e.detail,
                 # The provider billed for what it generated before cutting us off.
                 # chat() never reached tracker.add_call(), so booking it here is
@@ -2964,7 +3060,7 @@ SPELLING: Always use "partisan" (not "partizan"), "bipartisan" (not "bipartisan"
                             "transcript. Your section legitimately ends partway through — do NOT "
                             "assess overall transcript completeness, do NOT claim the transcript "
                             "is truncated, incomplete, or cut off, and do NOT set a 'needs_review' "
-                            "status on that basis. Format only the dialogue in this section.\n\n"
+                            "status on that basis.\n\n"
                         )
                     user_message += "Using the following analysis as guidance:\n\n"
                     if sst_section:
@@ -3009,6 +3105,13 @@ Please format this transcript section:
                 style_section = style_pre.get("prompt_section")
                 if style_section:
                     user_message = f"{user_message}\n\n{style_section}"
+
+                # Say which end of the document this chunk owns (FMT-1) and carry
+                # any retry/editorial context the operator supplied (RETRY-1).
+                wrapper = self._chunk_wrapper_instructions(chunk.index, total_chunks)
+                if wrapper:
+                    user_message = f"{wrapper}{user_message}"
+                user_message += self._retry_context_section(context)
 
                 messages = [
                     {"role": "system", "content": system_prompt},

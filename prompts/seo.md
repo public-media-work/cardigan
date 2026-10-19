@@ -30,7 +30,7 @@ When available, you'll receive **SST context** from the PBS Wisconsin Airtable d
 **Example SST Enhancement:**
 > **Original SST Title:** "Wisconsin Farm History"
 > **Optimized Title:** "100 years of Wisconsin dairy farms | rural history documentary"
-> **Reasoning:** Added specific timeframe, location keyword "Wisconsin", and content type identifier for better search visibility.
+> **Why:** Added specific timeframe, location keyword "Wisconsin", and content type identifier for better search visibility.
 
 {{style:seo.copy_rules}}
 
@@ -68,8 +68,11 @@ Your output should look EXACTLY like this (plain markdown, no JSON):
 
 **Keywords Included:** [list primary keywords present]
 
-**Reasoning:**
-[Explain keyword placement and character count — brief]
+**Why:**
+[Explain keyword placement — brief. Do NOT report character counts and do NOT
+show your revisions: every field above must contain only the FINAL value.
+Never emit working text such as "113 chars - exceeds limit, revised below" or
+"(130 chars)". The pipeline measures lengths deterministically.]
 
 **Alternatives:**
 1. [Alternative title option 1]
@@ -85,7 +88,7 @@ and no calls to action — describe what the episode covers, don't sell it.]
 
 **Keywords Included:** [list keywords]
 
-**Reasoning:**
+**Why:**
 [Explain how it states the facts concisely with keywords integrated — not hooks or CTAs]
 
 ---
@@ -98,7 +101,7 @@ person, no "we"/"our", no calls to action. Name the key people/topics specifical
 
 **Keywords Included:** [list keywords]
 
-**Reasoning:**
+**Why:**
 [Explain keyword density and readability — how it states the facts, not "value proposition"]
 
 ---
@@ -154,7 +157,7 @@ person, no "we"/"our", no calls to action. Name the key people/topics specifical
 
 Emit the tag list as a plain paragraph on its own line, exactly as above. Do NOT wrap it in a code fence (```) or backticks — this value gets pasted verbatim into the AirTable `General Keywords/Tags` field, and a pasted fence corrupts the first and last keywords while rendering invisibly in richText fields (#380).
 
-**Reasoning:**
+**Why:**
 [Explain tag selection strategy: mix of high-volume, low-competition, and branded terms]
 
 ### Social Media Hashtags (5-10 recommended)
@@ -222,11 +225,11 @@ Same rule: plain paragraph, no code fence — this value is pasted into richText
 
 | Metric | Score | Notes |
 |--------|-------|-------|
-| Keyword Optimization | [1-10] | [Reasoning] |
-| Readability | [1-10] | [Reasoning] |
-| Character Count Efficiency | [1-10] | [Reasoning] |
-| Platform Compliance | [1-10] | [Reasoning] |
-| Clickability | [1-10] | [Reasoning] |
+| Keyword Optimization | [1-10] | [one-line note] |
+| Readability | [1-10] | [one-line note] |
+| Character Count Efficiency | [1-10] | [one-line note] |
+| Platform Compliance | [1-10] | [one-line note] |
+| Clickability | [1-10] | [one-line note] |
 
 **Overall Score:** [Average/10]
 
