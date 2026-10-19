@@ -29,13 +29,19 @@ ETC=/etc/cardigan
 WWW=/var/www/cardigan
 API=http://127.0.0.1:8100
 PROVENANCE="$APP/DEPLOYED_SHA"     # last successful deploy only
-LAST_ATTEMPT="$APP/LAST_ATTEMPT"   # every run, success or failure
+LAST_ATTEMPT="$APP/LAST_ATTEMPT"   # every run that changed something, ok or failed
+SITE=/etc/nginx/sites-available/cardigan
 
+# Refused before anything changed: no rollback hint, and LAST_ATTEMPT is left
+# alone so it still describes the last real attempt.
+refuse() { trap - ERR; echo "DEPLOY REFUSED: $* (nothing was changed)" >&2; exit 1; }
 die() {
   trap - ERR
   echo "DEPLOY FAILED: $*" >&2
   if [[ -n "${PREV_SHA:-}" ]]; then
-    echo "Previous commit: $PREV_SHA  (rollback: cardigan-deploy $PREV_SHA)" >&2
+    # ROLLBACK_FLAGS is "--force " while the api may be down: the rollback's own
+    # pre-flight can't read the queue then, and would refuse without it.
+    echo "Previous commit: $PREV_SHA  (rollback: cardigan-deploy ${ROLLBACK_FLAGS:-}$PREV_SHA)" >&2
   fi
   if [[ -n "${SHA:-}" ]]; then
     printf 'sha=%s\nstatus=failed\nreason=%s\nat=%s\n' "$SHA" "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -57,16 +63,16 @@ as_app_env() {
     'set -a; . /etc/cardigan/cardigan.env; [ -r /etc/cardigan/secrets.env ] && . /etc/cardigan/secrets.env; set +a; cd /opt/cardigan; exec "$@"' _ "$@"
 }
 
-[[ $EUID -eq 0 ]] || die "run as root (sudo cardigan-deploy <ref>)"
+[[ $EUID -eq 0 ]] || refuse "run as root (sudo cardigan-deploy <ref>)"
 REF=""; FORCE=""
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=--force ;;
-    -*) die "unknown option '$arg' (usage: cardigan-deploy [--force] <sha|tag>)" ;;
-    *) [[ -z "$REF" ]] || die "more than one ref given ('$REF', '$arg')"; REF="$arg" ;;
+    -*) refuse "unknown option '$arg' (usage: cardigan-deploy [--force] <sha|tag>)" ;;
+    *) [[ -z "$REF" ]] || refuse "more than one ref given ('$REF', '$arg')"; REF="$arg" ;;
   esac
 done
-[[ -n "$REF" ]] || die "usage: cardigan-deploy [--force] <sha|tag>"
+[[ -n "$REF" ]] || refuse "usage: cardigan-deploy [--force] <sha|tag>"
 cd "$APP"
 
 # The rollback target is the last SUCCESSFUL deploy. HEAD can't be trusted: a
@@ -83,24 +89,24 @@ fi
 step "Resolve $REF"
 as_app git fetch --quiet --tags --prune origin
 if as_app git show-ref --verify --quiet "refs/remotes/origin/$REF"; then
-  die "'$REF' is a branch. Deploy an exact commit or tag, e.g. cardigan-deploy \$(git rev-parse origin/$REF)"
+  refuse "'$REF' is a branch. Deploy an exact commit or tag, e.g. cardigan-deploy \$(git rev-parse origin/$REF)"
 fi
-SHA=$(as_app git rev-parse --verify --quiet "$REF^{commit}") || die "cannot resolve '$REF' to a commit"
+SHA=$(as_app git rev-parse --verify --quiet "$REF^{commit}") || refuse "cannot resolve '$REF' to a commit"
 echo "commit $SHA (last deployed: ${PREV_SHA:-none})"
 for need in requirements.lock deploy/native/cardigan-deploy; do
   as_app git cat-file -e "$SHA:$need" 2>/dev/null \
-    || die "$SHA predates the native deploy (no $need); cannot deploy it here"
+    || refuse "$SHA predates the native deploy (no $need); cannot deploy it here"
 done
 
 step "Pre-flight"
 if [[ -n "$(as_app git status --porcelain --untracked-files=no)" ]]; then
   as_app git status --short --untracked-files=no >&2
-  die "checkout has local changes; resolve them before deploying"
+  refuse "checkout has local changes; resolve them before deploying"
 fi
 if systemctl is-active --quiet cardigan-api; then
   IN_PROGRESS=$(curl -fsS --max-time 10 "$API/api/system/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("queue",{}).get("in_progress",0))' 2>/dev/null || echo "?")
   if [[ "$IN_PROGRESS" != "0" && "$FORCE" != "--force" ]]; then
-    die "$IN_PROGRESS job(s) in progress (or health unreadable); wait, or re-run with --force"
+    refuse "$IN_PROGRESS job(s) in progress (or health unreadable); wait, or re-run with --force"
   fi
 fi
 
@@ -131,10 +137,17 @@ case "$CARDIGAN_API_KEY" in
   *[\"\\\$[:space:]]*) die "CARDIGAN_API_KEY contains a quote, backslash, \$ or whitespace; nginx can't carry it safely" ;;
 esac
 CARDIGAN_API_KEY="$CARDIGAN_API_KEY" envsubst '${CARDIGAN_API_KEY}' \
-  < deploy/native/nginx-cardigan.conf.template > /etc/nginx/sites-available/cardigan.new
-chmod 0600 /etc/nginx/sites-available/cardigan.new
-mv /etc/nginx/sites-available/cardigan.new /etc/nginx/sites-available/cardigan
-nginx -t -q || die "nginx config test failed"
+  < deploy/native/nginx-cardigan.conf.template > "$SITE.new"
+chmod 0600 "$SITE.new"
+# nginx -t can only test the site in place, so keep the old one to put back:
+# otherwise a failed test leaves a broken site for the next reload or reboot.
+if [[ -f "$SITE" ]]; then cp -p "$SITE" "$SITE.prev"; fi
+mv "$SITE.new" "$SITE"
+if ! nginx -t -q; then
+  if [[ -f "$SITE.prev" ]]; then mv "$SITE.prev" "$SITE"; else rm -f "$SITE"; fi
+  die "nginx config test failed (previous site restored; live nginx unchanged)"
+fi
+rm -f "$SITE.prev"
 systemctl reload-or-restart nginx
 
 step "Config drift"
@@ -148,6 +161,7 @@ step "Restart"
 # Stop the worker first: the API's ExecStartPre runs `alembic upgrade head`, and
 # the old worker must not pick up a job against a schema mid-migration.
 systemctl stop cardigan-worker || die "could not stop cardigan-worker"
+ROLLBACK_FLAGS="--force "
 systemctl restart cardigan-api || die "cardigan-api failed to start (journalctl -u cardigan-api); cardigan-worker is stopped"
 # 240s, inside the unit's TimeoutStartSec=300, so this wait never outlasts systemd.
 for _ in $(seq 1 120); do
@@ -155,6 +169,7 @@ for _ in $(seq 1 120); do
   sleep 2
 done
 curl -fsS --max-time 5 "$API/api/system/health" >/dev/null || die "API not healthy after 240s (journalctl -u cardigan-api); cardigan-worker is stopped"
+ROLLBACK_FLAGS=""
 systemctl restart cardigan-worker || die "cardigan-worker failed to start (journalctl -u cardigan-worker)"
 # Long enough to catch an import-time crash; NRestarts resets on a manual start,
 # so any non-zero value means it has already crash-looped.

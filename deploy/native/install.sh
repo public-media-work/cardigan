@@ -50,8 +50,8 @@ install -d -o cardigan -g cardigan "$APP" "$VENV" /var/log/cardigan /var/www/car
 # (idmap). Create what is missing; never re-chown or re-mode a directory that
 # already exists -- in an unprivileged LXC that can fail on unmapped IDs or
 # silently strip group write.
-if [[ -n "${CARDIGAN_DATA_GID:-}" ]]; then STATE_GROUP="$CARDIGAN_DATA_GID"; STATE_MODE=2775
-else STATE_GROUP=cardigan; STATE_MODE=0755; fi
+if [[ -n "${CARDIGAN_DATA_GID:-}" ]]; then STATE_GROUP="$CARDIGAN_DATA_GID"; STATE_MODE=2775; STATE_FILE_MODE=0664
+else STATE_GROUP=cardigan; STATE_MODE=0755; STATE_FILE_MODE=0644; fi
 for d in "$STATE" "$STATE"/{db,output,transcripts,media,config,knowledge}; do
   [[ -d "$d" ]] || install -d -o cardigan -g "$STATE_GROUP" -m "$STATE_MODE" "$d"
 done
@@ -71,7 +71,7 @@ if [[ ! -f "$ETC/cardigan.env" ]]; then
 fi
 # The glossary is written by the app; seed it once from the repo copy.
 if [[ ! -f "$STATE/knowledge/glossary.md" && -f "$APP/knowledge/glossary.md" ]]; then
-  install -o cardigan -g cardigan -m 0644 "$APP/knowledge/glossary.md" "$STATE/knowledge/glossary.md"
+  install -o cardigan -g "$STATE_GROUP" -m "$STATE_FILE_MODE" "$APP/knowledge/glossary.md" "$STATE/knowledge/glossary.md"
 fi
 
 echo "==> deploy command, units, nginx site"
@@ -84,7 +84,8 @@ ln -sf /etc/nginx/sites-available/cardigan /etc/nginx/sites-enabled/cardigan
 
 cat <<EOF
 
-Bootstrap done. Nothing is running yet. Next:
+Bootstrap done. Nothing is running yet, and the nginx site doesn't exist until
+the first deploy renders it -- don't restart nginx before then. Next:
   1. From the Mac:  scripts/sync-native-secrets.sh <host>
   2. Review $ETC/cardigan.env
   3. On the box:    cardigan-deploy <sha-or-tag>
