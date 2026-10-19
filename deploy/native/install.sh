@@ -3,7 +3,7 @@
 #
 # Run as root on a fresh unprivileged Debian 13 LXC, AFTER the ocean/cardigan
 # bind mount is in place at /var/lib/cardigan. Idempotent: re-running only
-# fills in what is missing. It does NOT start anything or deploy code — that
+# fills in what is missing. It starts nothing of Cardigan's and deploys no code — that
 # is cardigan-deploy's job, once secrets are synced.
 #
 # Usage (on the box):

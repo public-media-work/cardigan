@@ -39,8 +39,9 @@ die() {
   trap - ERR
   echo "DEPLOY FAILED: $*" >&2
   if [[ -n "${PREV_SHA:-}" ]]; then
-    # ROLLBACK_FLAGS is "--force " while the api may be down: the rollback's own
-    # pre-flight can't read the queue then, and would refuse without it.
+    # ROLLBACK_FLAGS is "--force " while the api may be active but not
+    # answering: the rollback's pre-flight would read the queue as "?" and
+    # refuse. (A stopped api skips the queue check, so --force is just safe.)
     echo "Previous commit: $PREV_SHA  (rollback: cardigan-deploy ${ROLLBACK_FLAGS:-}$PREV_SHA)" >&2
   fi
   if [[ -n "${SHA:-}" ]]; then
@@ -64,6 +65,26 @@ as_app_env() {
 }
 
 [[ $EUID -eq 0 ]] || refuse "run as root (sudo cardigan-deploy <ref>)"
+
+# Survive a dropped ssh session. The deploy stops the worker for minutes; a
+# SIGHUP or SIGPIPE from a closed terminal would kill it without going through
+# die(), leaving the worker down and no record. So the real run is re-executed
+# in its own session (setsid, no terminal) writing to a per-run log, and this
+# foreground process only follows that log. If the connection drops, only the
+# tail dies and the deploy carries on; read the log or LAST_ATTEMPT afterwards.
+if [[ -z "${CARDIGAN_DEPLOY_LOG:-}" ]]; then
+  CARDIGAN_DEPLOY_LOG="/var/log/cardigan/deploy-$(date -u +%Y%m%dT%H%M%SZ).log"
+  export CARDIGAN_DEPLOY_LOG
+  install -d -m 0755 /var/log/cardigan
+  : > "$CARDIGAN_DEPLOY_LOG"
+  trap - ERR
+  setsid "$(readlink -f "$0")" "$@" < /dev/null >> "$CARDIGAN_DEPLOY_LOG" 2>&1 &
+  child=$!
+  echo "deploy running as pid $child; log: $CARDIGAN_DEPLOY_LOG"
+  tail -n +1 -f --pid="$child" "$CARDIGAN_DEPLOY_LOG" || true
+  rc=0; wait "$child" || rc=$?
+  exit "$rc"
+fi
 REF=""; FORCE=""
 for arg in "$@"; do
   case "$arg" in
@@ -111,6 +132,9 @@ if systemctl is-active --quiet cardigan-api; then
 fi
 
 step "Check out and install"
+# From here on the box changes. Record the attempt now, so a run killed outright
+# (not via die) still leaves a trace instead of the previous run's status.
+printf 'sha=%s\nstatus=started\nlog=%s\nat=%s\n' "$SHA" "$CARDIGAN_DEPLOY_LOG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LAST_ATTEMPT"
 as_app git checkout --quiet --detach "$SHA"
 as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check -r requirements.lock
 as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check --no-deps -e .

@@ -45,7 +45,9 @@ ssh cardigan02 cardigan-deploy "$(git rev-parse origin/main)"
 5. **Restart:** stops the worker, restarts the api (which runs migrations), waits up to 240s for it to report healthy, then starts the worker and checks it hasn't crash-looped after 10s. The worker is stopped first so no job runs against a schema mid-migration.
 6. **Verify:** checks that `GET /` reports the expected version and that `:3100` serves the dashboard, then writes `DEPLOYED_SHA`.
 
-**Rollback:** `cardigan-deploy <previous sha>`. The previous sha is the last *successful* deploy: it is printed on failure and stored in `DEPLOYED_SHA`. Commits from before the native deploy (no `requirements.lock` or `deploy/native/`) are refused, since they can't run under this layout. If the api failed to come back, the hint says `cardigan-deploy --force <sha>`: the rollback's own pre-flight can't read the queue from a down api. Migrations only go forward, so to undo a schema change, restore `ocean/cardigan` from a ZFS snapshot.
+**Rollback:** `cardigan-deploy <previous sha>`. The previous sha is the last *successful* deploy: it is printed on failure and stored in `DEPLOYED_SHA`. Commits from before the native deploy (no `requirements.lock` or `deploy/native/`) are refused, since they can't run under this layout. If the api failed to come back, the hint says `cardigan-deploy --force <sha>`, in case the api is up but not answering and the rollback's pre-flight can't read the queue.
+
+**Dropped connections:** `cardigan-deploy` re-runs itself detached (`setsid`) and writes each run to `/var/log/cardigan/deploy-<timestamp>.log`. The terminal only follows that log. If your ssh session drops mid-deploy, the deploy still finishes; check the log, or `LAST_ATTEMPT` (`status=started` means it is still running or was killed). Migrations only go forward, so to undo a schema change, restore `ocean/cardigan` from a ZFS snapshot.
 
 `cardigan-deploy` installs itself to `/usr/local/sbin` as part of each run, so a change to the script takes effect on the deploy *after* the one that ships it.
 
