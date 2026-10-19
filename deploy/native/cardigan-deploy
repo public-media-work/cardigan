@@ -148,13 +148,13 @@ step "Restart"
 # Stop the worker first: the API's ExecStartPre runs `alembic upgrade head`, and
 # the old worker must not pick up a job against a schema mid-migration.
 systemctl stop cardigan-worker || die "could not stop cardigan-worker"
-systemctl restart cardigan-api || die "cardigan-api failed to start (journalctl -u cardigan-api)"
+systemctl restart cardigan-api || die "cardigan-api failed to start (journalctl -u cardigan-api); cardigan-worker is stopped"
 # 240s, inside the unit's TimeoutStartSec=300, so this wait never outlasts systemd.
 for _ in $(seq 1 120); do
   curl -fsS --max-time 5 "$API/api/system/health" >/dev/null 2>&1 && break
   sleep 2
 done
-curl -fsS --max-time 5 "$API/api/system/health" >/dev/null || die "API not healthy after 240s (journalctl -u cardigan-api)"
+curl -fsS --max-time 5 "$API/api/system/health" >/dev/null || die "API not healthy after 240s (journalctl -u cardigan-api); cardigan-worker is stopped"
 systemctl restart cardigan-worker || die "cardigan-worker failed to start (journalctl -u cardigan-worker)"
 # Long enough to catch an import-time crash; NRestarts resets on a manual start,
 # so any non-zero value means it has already crash-looped.
