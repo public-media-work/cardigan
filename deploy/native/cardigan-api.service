@@ -1,0 +1,25 @@
+[Unit]
+Description=Cardigan API (FastAPI, :8100)
+Documentation=https://github.com/public-media-work/cardigan/blob/main/deploy/native/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cardigan
+Group=cardigan
+WorkingDirectory=/opt/cardigan
+EnvironmentFile=/etc/cardigan/cardigan.env
+EnvironmentFile=-/etc/cardigan/secrets.env
+# Migrations run here (not in the worker) so the schema is current before
+# either process touches the DB — the same contract as entrypoint.sh.
+ExecStartPre=/opt/cardigan-venv/bin/alembic upgrade head
+ExecStart=/opt/cardigan-venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8100
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# cardigan-deploy — deploy one exact commit to a native Cardigan box (#470).
+#
+#   sudo cardigan-deploy <sha|tag> [--force]
+#
+# Every step verifies its own outcome and the script exits non-zero the moment
+# one fails (#442: no silent deploys). In order:
+#   1. fetch, resolve <ref> to a commit; refuse branch names (deploy what you mean)
+#   2. refuse if jobs are in progress (unless --force) or the checkout is dirty
+#   3. check out the commit; install from requirements.lock; reinstall the
+#      package so api/_version.py matches the commit
+#   4. build the dashboard and publish it to /var/www/cardigan
+#   5. install units, render the nginx site, nginx -t + reload
+#   6. print config drift (live vs repo values; live values are kept)
+#   7. restart api (runs migrations) then worker; wait for health
+#   8. verify GET / reports the expected version; write DEPLOYED_SHA
+#
+# Rollback = cardigan-deploy <previous sha> (printed on failure). Schema
+# migrations are forward-only; restore the DB from a ZFS snapshot if needed.
+set -euo pipefail
+
+APP=/opt/cardigan
+VENV=/opt/cardigan-venv
+ETC=/etc/cardigan
+WWW=/var/www/cardigan
+API=http://127.0.0.1:8100
+PROVENANCE="$APP/DEPLOYED_SHA"
+
+die() { echo "DEPLOY FAILED: $*" >&2; [[ -n "${PREV_SHA:-}" ]] && echo "Previous commit: $PREV_SHA  (rollback: cardigan-deploy $PREV_SHA)" >&2; exit 1; }
+step() { echo; echo "==> $*"; }
+# runuser keeps root's HOME; give npm/pip caches a home the app user owns.
+CACHE_HOME=/var/cache/cardigan
+as_app() { runuser -u cardigan -- env HOME="$CACHE_HOME" "$@"; }
+# Run as the app user with the runtime env loaded (paths + secrets).
+as_app_env() {
+  runuser -u cardigan -- env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$CACHE_HOME" bash -c \
+    'set -a; . /etc/cardigan/cardigan.env; [ -r /etc/cardigan/secrets.env ] && . /etc/cardigan/secrets.env; set +a; cd /opt/cardigan; exec "$@"' _ "$@"
+}
+
+[[ $EUID -eq 0 ]] || die "run as root (sudo cardigan-deploy <ref>)"
+REF="${1:-}"; FORCE="${2:-}"
+[[ -n "$REF" ]] || die "usage: cardigan-deploy <sha|tag> [--force]"
+cd "$APP"
+
+PREV_SHA=$(as_app git rev-parse HEAD 2>/dev/null || true)
+
+step "Resolve $REF"
+as_app git fetch --quiet --tags --prune origin
+if as_app git show-ref --verify --quiet "refs/remotes/origin/$REF"; then
+  die "'$REF' is a branch. Deploy an exact commit or tag, e.g. cardigan-deploy \$(git rev-parse origin/$REF)"
+fi
+SHA=$(as_app git rev-parse --verify --quiet "$REF^{commit}") || die "cannot resolve '$REF' to a commit"
+echo "commit $SHA (was ${PREV_SHA:-none})"
+
+step "Pre-flight"
+if [[ -n "$(as_app git status --porcelain --untracked-files=no)" ]]; then
+  as_app git status --short --untracked-files=no >&2
+  die "checkout has local changes; resolve them before deploying"
+fi
+if systemctl is-active --quiet cardigan-api; then
+  IN_PROGRESS=$(curl -fsS --max-time 10 "$API/api/system/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("queue",{}).get("in_progress",0))' 2>/dev/null || echo "?")
+  if [[ "$IN_PROGRESS" != "0" && "$FORCE" != "--force" ]]; then
+    die "$IN_PROGRESS job(s) in progress (or health unreadable); wait, or re-run with --force"
+  fi
+fi
+
+step "Check out and install"
+as_app git checkout --quiet --detach "$SHA"
+as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check -r requirements.lock
+as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check --no-deps -e .
+EXPECTED=$(as_app "$VENV/bin/python" -c 'from api._version import __version__; print(__version__)') \
+  || die "api/_version.py was not written by the package install"
+echo "expected version $EXPECTED"
+
+step "Build dashboard"
+( cd web && as_app npm ci --silent --no-audit --no-fund && as_app npm run --silent build ) || die "web build failed"
+[[ -f web/dist/index.html ]] || die "web build produced no index.html"
+rsync -a --delete web/dist/ "$WWW/"
+
+step "Units and nginx"
+install -m 0644 deploy/native/cardigan-{api,worker}.service /etc/systemd/system/
+install -m 0755 deploy/native/cardigan-deploy /usr/local/sbin/cardigan-deploy
+systemctl daemon-reload
+CARDIGAN_API_KEY=$(set -a; . "$ETC/cardigan.env"; [[ -r "$ETC/secrets.env" ]] && . "$ETC/secrets.env"; echo "${CARDIGAN_API_KEY:-}")
+CARDIGAN_API_KEY="$CARDIGAN_API_KEY" envsubst '${CARDIGAN_API_KEY}' \
+  < deploy/native/nginx-cardigan.conf.template > /etc/nginx/sites-available/cardigan.new
+chmod 0600 /etc/nginx/sites-available/cardigan.new
+mv /etc/nginx/sites-available/cardigan.new /etc/nginx/sites-available/cardigan
+nginx -t -q || die "nginx config test failed"
+systemctl reload-or-restart nginx
+
+step "Config drift"
+as_app_env python scripts/config_drift.py || true
+LIVE_GLOSSARY=$(set -a; . "$ETC/cardigan.env"; echo "${KNOWLEDGE_DIR:-}")/glossary.md
+if [[ -f "$LIVE_GLOSSARY" ]] && ! cmp -s "$LIVE_GLOSSARY" knowledge/glossary.md; then
+  echo "Note: repo knowledge/glossary.md differs from the live $LIVE_GLOSSARY (live kept)."
+fi
+
+step "Restart"
+systemctl restart cardigan-api || die "cardigan-api failed to start (journalctl -u cardigan-api)"
+for _ in $(seq 1 30); do
+  curl -fsS --max-time 5 "$API/api/system/health" >/dev/null 2>&1 && break
+  sleep 2
+done
+curl -fsS --max-time 5 "$API/api/system/health" >/dev/null || die "API not healthy after 60s (journalctl -u cardigan-api)"
+systemctl restart cardigan-worker
+sleep 3
+systemctl is-active --quiet cardigan-worker || die "cardigan-worker is not running (journalctl -u cardigan-worker)"
+
+step "Verify"
+RUNNING=$(curl -fsS --max-time 5 "$API/" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])') \
+  || die "GET / did not return a version"
+[[ "$RUNNING" == "$EXPECTED" ]] || die "running version '$RUNNING' != expected '$EXPECTED'"
+curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:3100/ || die "dashboard not served on :3100"
+
+printf 'sha=%s\nref=%s\nversion=%s\ndeployed_at=%s\ndeployed_by=%s\nprevious=%s\n' \
+  "$SHA" "$REF" "$RUNNING" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SUDO_USER:-root}" "${PREV_SHA:-}" > "$PROVENANCE"
+echo
+echo "DEPLOYED $SHA ($RUNNING)"

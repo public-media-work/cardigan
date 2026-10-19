@@ -1,0 +1,52 @@
+# Native deployment (no Docker)
+
+How Cardigan V4 runs on **cardigan02**: an unprivileged Debian 13 LXC with systemd units, a git checkout, and state on a ZFS bind mount. Tracked in #470, and the reasoning is in #442. Running natively removes six of the nine ways the Docker deploy could fail without anyone noticing: there's no registry, no image build, and no seed-once volume.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `/opt/cardigan` | git checkout, detached at the deployed commit. Owned by `cardigan`. |
+| `/opt/cardigan/DEPLOYED_SHA` | what's running: sha, ref, version, time, who, previous sha |
+| `/opt/cardigan-venv` | Python 3.13 venv, installed from `requirements.lock` |
+| `/var/lib/cardigan/` | **state**, on the `ocean/cardigan` bind mount: `db/`, `output/`, `transcripts/`, `media/`, `config/llm-config.json`, `knowledge/glossary.md` |
+| `/var/www/cardigan` | built dashboard (copied from `web/dist`) |
+| `/etc/cardigan/cardigan.env` | non-secret settings (from `cardigan.env.example`) |
+| `/etc/cardigan/secrets.env` | secrets, written only by `scripts/sync-native-secrets.sh` |
+| `/var/log/cardigan`, `/var/cache/cardigan` | logs; npm/pip caches |
+
+**Services:**
+- `cardigan-api`: uvicorn on `:8100`; runs migrations before it starts
+- `cardigan-worker`
+- nginx: the dashboard on `:3100`, proxying `/api/` to `127.0.0.1:8100`
+
+**Not deployed here (same as today's prod):** diarization (#473), the HTTP MCP server (#474), API-key auth (#475).
+
+## First install
+
+1. Create the LXC and the `ocean/cardigan` bind mount at `/var/lib/cardigan`. See proxmox-config `containers/cardigan02/`.
+2. On the box, as root: `CARDIGAN_DATA_GID=1100 ./install.sh`. This installs packages, creates the user, directories, checkout and venv, and puts the units and nginx site in place. Nothing starts yet.
+3. From the Mac: `scripts/sync-native-secrets.sh cardigan02`
+4. On the box: `cardigan-deploy <sha>`
+
+## Deploying
+
+```bash
+ssh cardigan02 cardigan-deploy "$(git rev-parse origin/main)"
+```
+
+`cardigan-deploy` only accepts an exact commit or tag; branch names are refused. It refuses to run while jobs are in progress unless you pass `--force`. It stops and reports failure the moment any step fails. The steps:
+
+1. **Check out and install:** checks out the commit, installs from the lock, and reinstalls the package so the version it reports matches the commit.
+2. **Dashboard:** builds and publishes it.
+3. **Units and nginx:** reinstalls the units and renders the nginx site.
+4. **Drift report:** prints config drift (`scripts/config_drift.py`). Live values are kept.
+5. **Restart:** restarts the api (which runs migrations), waits for it to report healthy, then restarts the worker.
+6. **Verify:** checks that `GET /` reports the expected version and that `:3100` serves the dashboard, then writes `DEPLOYED_SHA`.
+
+**Rollback:** `cardigan-deploy <previous sha>`. The previous sha is printed on failure and stored in `DEPLOYED_SHA`. Migrations only go forward, so to undo a schema change, restore `ocean/cardigan` from a ZFS snapshot.
+
+## Config and glossary
+
+- **`llm-config.json`:** `LLM_CONFIG_PATH` points into the state dir. At startup, keys that exist in the repo but are missing from the live file are added; existing values are never overwritten (#440). When the repo *changes* a value, the deploy's drift report shows the difference. Apply it through Settings, or edit the live file.
+- **`knowledge/glossary.md`:** the app writes to it, so it lives at `KNOWLEDGE_DIR` in the state dir and was seeded once from the repo. That keeps the git checkout clean. The deploy notes when the repo copy differs.
