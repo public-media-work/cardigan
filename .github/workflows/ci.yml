@@ -25,6 +25,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
+          cache-dependency-path: requirements-dev.txt
       - name: Install lint tools
         run: pip install -r requirements-dev.txt
       - name: Ruff check
@@ -86,6 +87,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
+          cache-dependency-path: requirements.lock
       - name: Install dependencies
         # requirements.lock is compiled from requirements.txt + requirements-dev.txt,
         # so tests run against exactly the versions the images and native box install.
@@ -132,6 +134,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
+          cache-dependency-path: requirements.lock
       - name: Install dependencies
         run: pip install -r requirements.lock
       - name: Run Alembic migrations
