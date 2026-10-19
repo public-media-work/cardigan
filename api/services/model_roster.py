@@ -11,17 +11,19 @@ import logging
 import os
 import time
 from fnmatch import fnmatch
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
 
+from api.services.config_path import resolve_config_path
 from api.services.secrets import get_secret
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path("config/llm-config.json")
+# The live config, not the packaged default, so `available_models` and
+# `model_families` edits made through Settings are seen here too (#440).
+CONFIG_PATH = resolve_config_path()
 
 # Cache: list of model dicts + expiry timestamp
 _cache: Dict[str, Any] = {"models": None, "expires": 0.0}
