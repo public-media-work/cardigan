@@ -469,3 +469,75 @@ class TestDedupSeamTurns:
         )
         nxt = "**Dave:**  \nRight.\n\n**Erin:**  \nOn to the next agenda item."
         assert _dedup_seam_turns(prev, nxt) == nxt  # nothing dropped
+
+
+# ─── Output-budget gate (#404) ─────────────────────────────────────────
+
+
+class TestOutputWordBudget:
+    """Chunking is gated on projected output vs. the backend's max_tokens.
+
+    Word-count thresholds could not express the real constraint: a sparse
+    hour-long program fell below them while a dense short one sailed past.
+    The budget derives the gate from the cap the output must actually fit in.
+    """
+
+    def test_budget_derives_from_cap(self):
+        from api.services.chunking import output_word_budget
+
+        # 16384 tokens / 2.0 tokens-per-word * 0.8 safety = 6553 words
+        assert output_word_budget(16384, tokens_per_word=2.0, safety_factor=0.8) == 6553
+
+    def test_budget_scales_with_cap(self):
+        """Caps chosen to divide evenly so the assertion tests scaling, not rounding."""
+        from api.services.chunking import output_word_budget
+
+        small = output_word_budget(5000, tokens_per_word=2.0, safety_factor=0.8)
+        large = output_word_budget(20000, tokens_per_word=2.0, safety_factor=0.8)
+        assert small == 2000
+        assert large == small * 4
+
+    def test_sparse_long_program_under_budget_does_not_chunk(self):
+        """Job 48's shape: a 60-minute program with only ~2300 dialogue words.
+
+        Its projected output fits the cap, so a single call is correct.
+        """
+        srt = make_srt(232, words_per_caption=10)  # 2320 dialogue words
+        result = split_transcript(srt, is_srt=True, config={}, max_output_tokens=16384)
+        assert result is None
+
+    def test_transcript_over_budget_chunks(self):
+        """Above the budget the output cannot fit one call, so it must split."""
+        srt = make_srt(1000, words_per_caption=10)  # 10000 dialogue words
+        result = split_transcript(srt, is_srt=True, config={}, max_output_tokens=16384)
+        assert result is not None
+        assert len(result) >= 2
+
+    def test_lower_cap_pulls_the_gate_down(self):
+        """The same transcript chunks under a smaller cap — the gate tracks the cap."""
+        srt = make_srt(400, words_per_caption=10)  # 4000 dialogue words
+        assert split_transcript(srt, is_srt=True, config={}, max_output_tokens=16384) is None
+        result = split_transcript(srt, is_srt=True, config={}, max_output_tokens=4096)
+        assert result is not None
+        assert len(result) >= 2
+
+
+class TestSingleChunkDeadZone:
+    """The 1.5x guard silently skipped transcripts that genuinely needed splitting."""
+
+    def test_srt_between_target_and_1_5x_target_chunks(self):
+        """2000 words against a 1500 target is over budget and must split.
+
+        The old ``total_words < target * 1.5`` guard returned None here (2000 <
+        2250), so the transcript went out as one oversized call.
+        """
+        srt = make_srt(200, words_per_caption=10)  # 2000 dialogue words
+        chunks = _split_srt(srt, target_chunk_words=1500, overlap_captions=5)
+        assert chunks is not None
+        assert len(chunks) >= 2
+
+    def test_plain_text_between_target_and_1_5x_target_chunks(self):
+        text = make_plain_text(20, words_per_paragraph=100)  # 2000 words
+        chunks = _split_plain_text(text, target_chunk_words=1500)
+        assert chunks is not None
+        assert len(chunks) >= 2
