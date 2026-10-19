@@ -25,7 +25,7 @@ fi
 # Ensure virtual environment exists (Python 3.13 for Langfuse compatibility)
 if [ ! -d "venv13" ]; then
     echo "❌ Virtual environment not found. Run:"
-    echo "   /opt/homebrew/bin/python3.13 -m venv venv13 && ./venv13/bin/pip install -r requirements.txt"
+    echo "   /opt/homebrew/bin/python3.13 -m venv venv13 && ./venv13/bin/pip install -r requirements.lock"
     exit 1
 fi
 
