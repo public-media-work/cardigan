@@ -16,14 +16,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-from api.services.config_path import resolve_config_path
+from api.services.config_path import live_config_path
 from api.services.secrets import get_secret
 
 logger = logging.getLogger(__name__)
-
-# The live config, not the packaged default, so `available_models` and
-# `model_families` edits made through Settings are seen here too (#440).
-CONFIG_PATH = resolve_config_path()
 
 # Cache: list of model dicts + expiry timestamp
 _cache: Dict[str, Any] = {"models": None, "expires": 0.0}
@@ -32,7 +28,10 @@ CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
 def _load_config() -> dict:
-    with open(CONFIG_PATH) as f:
+    # The live config, not the packaged default, so `available_models` and
+    # `model_families` edits made through Settings are seen here too (#440).
+    # Looked up per call (no import-time side effects; seeding is startup's job).
+    with open(live_config_path()) as f:
         return json.load(f)
 
 

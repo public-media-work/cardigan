@@ -125,3 +125,34 @@ class TestResolveConfigPath:
 
         assert resolve_config_path() == target
         assert target.read_text() == "{not json"
+
+    @pytest.mark.parametrize("content", ["[]", '"a string"', "null", "42"])
+    def test_non_object_live_file_left_alone(self, paths, content):
+        _, target = paths
+        target.parent.mkdir(parents=True)
+        target.write_text(content)
+
+        assert resolve_config_path() == target
+        assert target.read_text() == content
+
+    def test_first_seed_leaves_no_temp_file(self, paths):
+        _, target = paths
+        resolve_config_path()
+        assert not list(target.parent.glob(".*.tmp"))
+
+
+def test_roster_reads_live_path_without_seeding(monkeypatch, tmp_path):
+    """Reading the roster config must not create or rewrite the live file."""
+    from api.services import model_roster
+
+    default = tmp_path / "default.json"
+    default.write_text(json.dumps(DEFAULT))
+    target = tmp_path / "state" / "llm-config.json"
+    target.parent.mkdir()
+    target.write_text(json.dumps(_live()))
+    before = target.read_text()
+    monkeypatch.setattr("api.services.config_path.DEFAULT_CONFIG", default)
+    monkeypatch.setenv("LLM_CONFIG_PATH", str(target))
+
+    assert model_roster._load_config() == _live()
+    assert target.read_text() == before

@@ -74,14 +74,28 @@ def _write_atomic(target: Path, data: dict) -> None:
     os.replace(tmp, target)
 
 
+def live_config_path() -> Path:
+    """Return the active config path. Pure: never creates or rewrites anything."""
+    return Path(os.getenv("LLM_CONFIG_PATH", str(DEFAULT_CONFIG)))
+
+
 def resolve_config_path() -> Path:
-    """Return the active config path, seeding or additively updating it from the default."""
-    target = Path(os.getenv("LLM_CONFIG_PATH", str(DEFAULT_CONFIG)))
+    """Return the active config path, seeding or additively updating it from the default.
+
+    Call at process startup. The merge reads, then atomically replaces, the file;
+    a Settings write landing inside that sub-millisecond window would be lost,
+    which is acceptable because it only runs while the processes are starting.
+    """
+    target = live_config_path()
     if target == DEFAULT_CONFIG or not DEFAULT_CONFIG.exists():
         return target
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(DEFAULT_CONFIG, target)
+        # Copy to a temp file and rename, so api and worker starting together
+        # never see (or seed from) a half-written file.
+        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        shutil.copyfile(DEFAULT_CONFIG, tmp)
+        os.replace(tmp, target)
         return target
 
     try:
@@ -90,6 +104,9 @@ def resolve_config_path() -> Path:
     except (OSError, json.JSONDecodeError) as e:
         # Leave an unreadable live file alone; the config readers fail loudly on it.
         logger.warning("Skipping additive config seeding for %s: %s", target, e)
+        return target
+    if not isinstance(live, dict) or not isinstance(default, dict):
+        logger.warning("Skipping additive config seeding for %s: top level is not a JSON object", target)
         return target
 
     added = merge_missing(live, default)
