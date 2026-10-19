@@ -7,25 +7,32 @@
 # EnvironmentFile=; api/services/secrets.py reads them from the environment.
 #
 # Usage:
-#   scripts/sync-native-secrets.sh <ssh-host>            # e.g. cardigan02 (must log in as root)
-#   scripts/sync-native-secrets.sh <ssh-host> --restart  # also restart api+worker
+#   scripts/sync-native-secrets.sh <ssh-host>     # e.g. cardigan02 (must log in as root)
 #
-# CARDIGAN_API_KEY is written empty (auth off, #475) unless get-secret.sh
-# resolves it. Any other missing secret aborts the sync (exit 2) — nothing is
-# written. The Docker-era equivalent is scripts/sync-homelab-secrets.sh.
+# It does not restart anything. To pick up new values, run cardigan-deploy
+# (which refuses while jobs are in progress), or restart cardigan-api and
+# cardigan-worker by hand after checking the queue is empty.
+#
+# This script owns /etc/cardigan/secrets.env outright: every run rewrites it,
+# and hand edits on the box are overwritten. That includes CARDIGAN_API_KEY,
+# which must come from get-secret.sh -- it is written empty (auth off, #475)
+# when get-secret.sh doesn't resolve it. Any other missing secret aborts the
+# sync (exit 2) and nothing is written. The Docker-era equivalent is
+# scripts/sync-homelab-secrets.sh.
 set -euo pipefail
 
 REQUIRED=(OPENROUTER_API_KEY AIRTABLE_API_KEY LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY)
 OPTIONAL=(CARDIGAN_API_KEY)
 
-HOST="${1:-}"; RESTART="${2:-}"
-[[ -n "$HOST" && "$HOST" != -* ]] || { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1; }
+HOST="${1:-}"
+[[ $# -eq 1 && -n "$HOST" && "$HOST" != -* ]] || { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1; }
 command -v get-secret.sh >/dev/null || { echo "get-secret.sh is not on PATH — flag this, don't work around it" >&2; exit 2; }
 
 body="# Written by scripts/sync-native-secrets.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ). Do not edit by hand."$'\n'
 add() {
   local key="$1" value="$2"
-  [[ "$value" != *"'"* && "$value" != *$'\n'* ]] || { echo "$key contains a quote or newline; refusing" >&2; exit 2; }
+  [[ "$value" != *"'"* && "$value" != *$'\n'* && "$value" != *\\* ]] \
+    || { echo "$key contains a quote, newline or backslash; refusing" >&2; exit 2; }
   body+="$key='$value'"$'\n'
 }
 
@@ -45,9 +52,4 @@ printf '%s' "$body" | ssh "$HOST" 'sh -c "umask 027; cat > /etc/cardigan/secrets
   && chown root:cardigan /etc/cardigan/secrets.env.new \
   && chmod 0640 /etc/cardigan/secrets.env.new \
   && mv /etc/cardigan/secrets.env.new /etc/cardigan/secrets.env"'
-echo "Wrote /etc/cardigan/secrets.env on $HOST"
-
-if [[ "$RESTART" == "--restart" ]]; then
-  ssh "$HOST" 'systemctl restart cardigan-api && systemctl restart cardigan-worker'
-  echo "Restarted cardigan-api and cardigan-worker on $HOST"
-fi
+echo "Wrote /etc/cardigan/secrets.env on $HOST (not restarted: run cardigan-deploy, or restart by hand after checking the queue)"

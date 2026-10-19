@@ -7,12 +7,13 @@ How Cardigan V4 runs on **cardigan02**: an unprivileged Debian 13 LXC with syste
 | Path | What |
 |---|---|
 | `/opt/cardigan` | git checkout, detached at the deployed commit. Owned by `cardigan`. |
-| `/opt/cardigan/DEPLOYED_SHA` | what's running: sha, ref, version, time, who, previous sha |
+| `/opt/cardigan/DEPLOYED_SHA` | last successful deploy: sha, ref, version, time, who, previous sha |
+| `/opt/cardigan/LAST_ATTEMPT` | the most recent run, success or failure, with the failure reason |
 | `/opt/cardigan-venv` | Python 3.13 venv, installed from `requirements.lock` |
 | `/var/lib/cardigan/` | **state**, on the `ocean/cardigan` bind mount: `db/`, `output/`, `transcripts/`, `media/`, `config/llm-config.json`, `knowledge/glossary.md` |
 | `/var/www/cardigan` | built dashboard (copied from `web/dist`) |
 | `/etc/cardigan/cardigan.env` | non-secret settings (from `cardigan.env.example`) |
-| `/etc/cardigan/secrets.env` | secrets, written only by `scripts/sync-native-secrets.sh` |
+| `/etc/cardigan/secrets.env` | secrets, written only by `scripts/sync-native-secrets.sh`; every sync rewrites it, so hand edits are lost. It doesn't restart anything |
 | `/var/log/cardigan`, `/var/cache/cardigan` | logs; npm/pip caches |
 
 **Services:**
@@ -41,10 +42,12 @@ ssh cardigan02 cardigan-deploy "$(git rev-parse origin/main)"
 2. **Dashboard:** builds and publishes it.
 3. **Units and nginx:** reinstalls the units and renders the nginx site.
 4. **Drift report:** prints config drift (`scripts/config_drift.py`). Live values are kept.
-5. **Restart:** restarts the api (which runs migrations), waits for it to report healthy, then restarts the worker.
+5. **Restart:** stops the worker, restarts the api (which runs migrations), waits up to 240s for it to report healthy, then starts the worker and checks it hasn't crash-looped after 10s. The worker is stopped first so no job runs against a schema mid-migration.
 6. **Verify:** checks that `GET /` reports the expected version and that `:3100` serves the dashboard, then writes `DEPLOYED_SHA`.
 
-**Rollback:** `cardigan-deploy <previous sha>`. The previous sha is printed on failure and stored in `DEPLOYED_SHA`. Migrations only go forward, so to undo a schema change, restore `ocean/cardigan` from a ZFS snapshot.
+**Rollback:** `cardigan-deploy <previous sha>`. The previous sha is the last *successful* deploy: it is printed on failure and stored in `DEPLOYED_SHA`. Commits from before the native deploy (no `requirements.lock` or `deploy/native/`) are refused, since they can't run under this layout. Migrations only go forward, so to undo a schema change, restore `ocean/cardigan` from a ZFS snapshot.
+
+`cardigan-deploy` installs itself to `/usr/local/sbin` as part of each run, so a change to the script takes effect on the deploy *after* the one that ships it.
 
 ## Config and glossary
 

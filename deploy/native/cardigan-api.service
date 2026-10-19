@@ -14,6 +14,9 @@ EnvironmentFile=-/etc/cardigan/secrets.env
 # Migrations run here (not in the worker) so the schema is current before
 # either process touches the DB — the same contract as entrypoint.sh.
 ExecStartPre=/opt/cardigan-venv/bin/alembic upgrade head
+# The start timeout covers ExecStartPre, so a long migration needs room. The
+# default 90s would kill it halfway; cardigan-deploy's health wait is 240s.
+TimeoutStartSec=300
 ExecStart=/opt/cardigan-venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 8100
 Restart=on-failure
 RestartSec=5

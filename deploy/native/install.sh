@@ -14,7 +14,9 @@
 # Env:
 #   CARDIGAN_DATA_GID  numeric GID that owns the bind-mounted state (the
 #                      proxmox-config idmap pattern uses 1100). If set, the
-#                      cardigan user joins that group. Default: unset.
+#                      cardigan user joins that group, and state directories
+#                      this script creates get that group, mode 2775.
+#                      Default: unset (cardigan:cardigan, 0755).
 #   CARDIGAN_REPO      clone URL. Default: the public GitHub repo.
 set -euo pipefail
 
@@ -44,7 +46,15 @@ fi
 
 echo "==> directories"
 install -d -o cardigan -g cardigan "$APP" "$VENV" /var/log/cardigan /var/www/cardigan /var/cache/cardigan
-install -d -o cardigan -g cardigan "$STATE"/{db,output,transcripts,media,config,knowledge}
+# State lives on the bind mount, whose ownership belongs to the Proxmox side
+# (idmap). Create what is missing; never re-chown or re-mode a directory that
+# already exists -- in an unprivileged LXC that can fail on unmapped IDs or
+# silently strip group write.
+if [[ -n "${CARDIGAN_DATA_GID:-}" ]]; then STATE_GROUP="$CARDIGAN_DATA_GID"; STATE_MODE=2775
+else STATE_GROUP=cardigan; STATE_MODE=0755; fi
+for d in "$STATE" "$STATE"/{db,output,transcripts,media,config,knowledge}; do
+  [[ -d "$d" ]] || install -d -o cardigan -g "$STATE_GROUP" -m "$STATE_MODE" "$d"
+done
 install -d -o root -g cardigan -m 0750 "$ETC"
 
 echo "==> checkout"
