@@ -64,14 +64,27 @@ def config_drift(live: dict, default: dict, _prefix: str = "") -> List[Tuple[str
     return drift
 
 
-def _write_atomic(target: Path, data: dict) -> None:
-    # api and worker can both start at once; os.replace keeps readers from ever
-    # seeing a half-written file.
+def _replace_atomically(target: Path, write) -> None:
+    """Write via ``write(tmp_path)`` to a temp file, then rename it over ``target``.
+
+    api and worker can both start at once; os.replace keeps readers from ever
+    seeing a half-written file. The temp file is removed if the write fails.
+    """
     tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, target)
+    try:
+        write(tmp)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _write_atomic(target: Path, data: dict) -> None:
+    def write(tmp: Path) -> None:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+
+    _replace_atomically(target, write)
 
 
 def live_config_path() -> Path:
@@ -93,9 +106,7 @@ def resolve_config_path() -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         # Copy to a temp file and rename, so api and worker starting together
         # never see (or seed from) a half-written file.
-        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        shutil.copyfile(DEFAULT_CONFIG, tmp)
-        os.replace(tmp, target)
+        _replace_atomically(target, lambda tmp: shutil.copyfile(DEFAULT_CONFIG, tmp))
         return target
 
     try:

@@ -156,3 +156,66 @@ def test_roster_reads_live_path_without_seeding(monkeypatch, tmp_path):
 
     assert model_roster._load_config() == _live()
     assert target.read_text() == before
+
+
+def test_failed_write_leaves_no_temp_file(monkeypatch, tmp_path):
+    """A write that raises must not strand its .tmp file."""
+    from api.services import config_path
+
+    target = tmp_path / "llm-config.json"
+
+    def boom(tmp):
+        tmp.write_text("partial")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        config_path._replace_atomically(target, boom)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+class TestDriftScript:
+    """scripts/config_drift.py runs on every cardigan-deploy: it must report, not crash."""
+
+    @pytest.fixture
+    def run(self, monkeypatch, tmp_path):
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "config_drift_script", Path(__file__).resolve().parents[2] / "scripts" / "config_drift.py"
+        )
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+
+        default = tmp_path / "default.json"
+        default.write_text(json.dumps(DEFAULT))
+        target = tmp_path / "llm-config.json"
+        monkeypatch.setattr("api.services.config_path.DEFAULT_CONFIG", default)
+        monkeypatch.setenv("LLM_CONFIG_PATH", str(target))
+
+        def _run(content, *argv):
+            target.write_text(content)
+            monkeypatch.setattr("sys.argv", ["config_drift.py", *argv])
+            return script.main()
+
+        return _run
+
+    def test_reports_drift_and_exits_zero(self, run, capsys):
+        assert run(json.dumps(_live())) == 0
+        assert "backends.openrouter.max_tokens" in capsys.readouterr().out
+
+    def test_strict_exits_one_on_drift(self, run):
+        assert run(json.dumps(_live()), "--strict") == 1
+
+    def test_unreadable_live_file_is_reported_not_raised(self, run, capsys):
+        assert run("{not json") == 0
+        assert "cannot compare" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("content", ["[]", "null", "42"])
+    def test_non_object_live_file_is_reported_not_raised(self, run, capsys, content):
+        assert run(content) == 0
+        assert "not a JSON object" in capsys.readouterr().out
+
+    def test_strict_exits_one_when_it_cannot_compare(self, run):
+        assert run("{not json", "--strict") == 1
