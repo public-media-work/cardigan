@@ -23,7 +23,8 @@ DEFAULT_CHUNKING_CONFIG = {
     "overlap_captions": 5,
     "max_parallel": 3,
     # Projected output tokens per source word. Measured 1.77 on lyric-dense
-    # content (job 48); rounded up because under-chunking truncates while
+    # content (job 48) and 1.80-1.86 on dense talk with reasoning off
+    # (6POL0213); rounded up because under-chunking truncates while
     # over-chunking only costs a little latency.
     "tokens_per_word": 2.0,
     # Headroom for the metadata header, speaker labels, and ratio variance.
