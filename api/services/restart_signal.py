@@ -4,7 +4,7 @@ A single timestamp in the config KV table (``restart_requested_at``) is the
 whole signal. Each long-lived component compares it against its own process
 start time and self-restarts when the signal is newer; because a restarted
 process has a newer start time, the same signal never re-fires. See
-docs/superpowers/specs/2026-07-16-system-components-restart-design.md.
+docs/SYSTEM_RESTART_DESIGN.md.
 """
 
 from datetime import datetime, timezone

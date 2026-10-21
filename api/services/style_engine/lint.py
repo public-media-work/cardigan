@@ -65,8 +65,15 @@ _RECOMMENDED_VALUE_RE = re.compile(r"\*\*Recommended:\*\*[ \t]*\n([^\n]*)")
 _BRACKET_PLACEHOLDER_RE = re.compile(r"^\[.*\]$")
 
 # seo_output.md's "### YouTube Tags (15-20 recommended)" section is the only
-# keyword/tag block with a well-defined item count -- the comma-separated
-# list lives in the fenced code block immediately under the heading.
+# keyword/tag block with a well-defined item count. Two shapes exist: the
+# current prompt (#380) emits the comma-separated list as a plain paragraph
+# under a "**Tags (paste-ready):**" label — code fences were removed because
+# pasted fences corrupt richText fields — while outputs generated before
+# that change carry the list in a fenced code block under the heading. Both
+# must keep extracting, or the keywords-count check silently stops firing.
+_YOUTUBE_TAGS_UNFENCED_RE = re.compile(
+    r"###\s*YouTube Tags.*?\*\*Tags \(paste-ready\):\*\*[ \t]*\n([^\n]+)", re.DOTALL | re.IGNORECASE
+)
 _YOUTUBE_TAGS_RE = re.compile(r"###\s*YouTube Tags.*?```[ \t]*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
 
 # limits.check_field_limits rule_ids -> this module's lint.* rule_ids. Reused
@@ -264,15 +271,24 @@ def _check_seo_limits(
 
 
 def _extract_keyword_tags(seo_output: str) -> list[str] | None:
-    """Comma-separated items from the "### YouTube Tags" fenced block, if present.
+    """Comma-separated items from the "### YouTube Tags" section, if present.
 
-    Returns ``None`` when the section can't be identified -- callers must
-    skip the keywords-count check silently in that case, never guess.
+    Tries the current unfenced "**Tags (paste-ready):**" shape first, then
+    the legacy fenced block (pre-#380 outputs). Returns ``None`` when the
+    section can't be identified -- callers must skip the keywords-count
+    check silently in that case, never guess.
     """
-    match = _YOUTUBE_TAGS_RE.search(seo_output)
-    if not match:
+    line = None
+    match = _YOUTUBE_TAGS_UNFENCED_RE.search(seo_output)
+    if match and match.group(1).strip().strip("`").strip():
+        line = match.group(1)
+    else:
+        match = _YOUTUBE_TAGS_RE.search(seo_output)
+        if match:
+            line = match.group(1)
+    if line is None:
         return None
-    items = [item.strip() for item in match.group(1).split(",")]
+    items = [item.strip() for item in line.split(",")]
     items = [item for item in items if item]
     return items or None
 

@@ -4,7 +4,7 @@ You are running the proof of concept for Cardigan's planned YouTube metadata
 feature. Your job: take one PBS Wisconsin YouTube video from selection through a
 reviewed copy audit report to an (optionally) approved metadata write-back —
 and log every pain point, because your findings decide whether the full feature
-gets built (see `planning/YOUTUBE_METADATA_FEATURE.md`).
+gets built (see `standalone-agents/youtube-copy-audit/FEATURE.md`).
 
 ## Hard guardrails
 

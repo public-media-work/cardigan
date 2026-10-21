@@ -66,7 +66,7 @@ home where ongoing analysis lives.
 > codebase in `cardigan-v4/` is the same v4 architecture without the
 > Docker wrapper. What replaces this migration's MCP server (skill-based
 > architecture) is likely tagged v4.5 or v5 after QA — see
-> `planning/MCP_DECOMMISSION_PLAN.md` for the roadmap context.
+> the MCP decommission plan (removed in the roadmap consolidation; see git history) for the roadmap context.
 
 ## How to use this directory
 
@@ -88,5 +88,5 @@ home where ongoing analysis lives.
 
 - `cardigan-v4/data/judge_archive/README.md` — active analysis hub for
   legacy Langfuse findings
-- `cardigan-v4/planning/` — current and historical design docs
-- Open issues on `mriechers/cardigan` with label `legacy-data`
+- Epic issues #222–#234 — the canonical roadmap (see the pinned Roadmap issue #357)
+- Open issues on `public-media-work/cardigan` with label `legacy-data`

@@ -29,6 +29,11 @@ class AirtableClient:
     MEDIA_ID_FIELD = "Media ID"
     MEDIA_ID_FIELD_ID = "fld8k42kJeWMHA963"
     API_BASE_URL = "https://api.airtable.com/v0"
+    # Fields requested by batch lookups. Every name must exist on the SST
+    # table or Airtable rejects the whole request with 422 (see #382, where
+    # a nonexistent "Title" made the batch lookup return empty forever).
+    # Pinned against the live schema by tests/test_sst_context_path.py.
+    SST_BATCH_FIELDS = ("Media ID", "Release Title", "Project")
 
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -106,6 +111,11 @@ class AirtableClient:
         Returns:
             Dict mapping media_id -> record dict for found records.
             Missing media_ids won't have entries in the result.
+
+        Raises:
+            httpx.HTTPError: On network or API errors. A failed request must
+                not be reported as an empty result — callers treat {} as
+                "no records matched" (see #382).
         """
         if not media_ids:
             return {}
@@ -128,25 +138,17 @@ class AirtableClient:
                 params = {
                     "filterByFormula": formula,
                     "maxRecords": len(batch),
-                    "fields[]": ["Media ID", "Title", "Project"],  # Only fetch needed fields
+                    "fields[]": list(self.SST_BATCH_FIELDS),  # Only fetch needed fields
                 }
 
-                try:
-                    response = await client.get(url, headers=self.headers, params=params)
-                    response.raise_for_status()
+                response = await client.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
 
-                    data = response.json()
-                    for record in data.get("records", []):
-                        mid = record.get("fields", {}).get(self.MEDIA_ID_FIELD)
-                        if mid:
-                            results[mid] = record
-
-                except httpx.HTTPError as e:
-                    # Log but don't fail the whole batch
-                    import logging
-
-                    logging.getLogger(__name__).warning(f"Batch SST lookup failed: {e}")
-                    continue
+                data = response.json()
+                for record in data.get("records", []):
+                    mid = record.get("fields", {}).get(self.MEDIA_ID_FIELD)
+                    if mid:
+                        results[mid] = record
 
         return results
 

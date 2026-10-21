@@ -67,7 +67,7 @@ Operational notes:
   `initial_prompt` swap and the `whisperx.diarize.DiarizationPipeline`
   import must be re-verified on upgrade.
 - Do **not** run WhisperX concurrently with the 19 GB local LLM on the
-  36 GB homelab box (see `planning/archive/2026-06-05-local-llm-tier-handoff.md`).
+  36 GB homelab box (see the local-LLM tier handoff, removed in the roadmap consolidation; see git history).
   Stop the diarization profile; media jobs defer until it returns.
 
 ## Glossary feedback loop

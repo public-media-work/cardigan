@@ -30,4 +30,4 @@ When modifying the editor agent's behavior:
 
 - `HOW_TO_USE.md` - End-user workflow guide
 - `QUICK_REFERENCE.md` - Command and tool quick reference
-- `planning/archive/DESIGN_v3.0.md` Part 7 - Editor Agent UX design (historical)
+- DESIGN_v3.0.md Part 7 - Editor Agent UX design (removed in the roadmap consolidation; see git history)

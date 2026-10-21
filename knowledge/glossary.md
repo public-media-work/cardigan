@@ -51,6 +51,7 @@ keep this header prose bullet-free.
 - Wisconsin Elections Commission
 - Act 10
 - Tavern League
+- Attorney General Kaul
 
 ## Place Names
 
@@ -137,6 +138,9 @@ Names and terms corrected during human editorial review. These represent cases w
 | Correct | Model Tendency | Context |
 |---------|---------------|---------|
 | Sean Duffy | Shawn Duffy | Former WI congressman; model confuses with IWP host Shawn Johnson |
+| Josh Kaul | Josh Gold | WI Attorney General; 6HNP2511 sign-off - named on mic only once |
+| Attorney General Kaul | Attorney General Call | 6HNP2511 open. Keep key as full phrase - a bare Call rewrites the verb |
+| Josh Kaul | Josh Kahl | 6HNP2511 Toney interview. Third distinct misrender of the same name - see whisper-ops FINDINGS-2026-09-09-toney |
 
 ## Name Disambiguation
 

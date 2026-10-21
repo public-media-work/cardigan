@@ -8,7 +8,7 @@ Provides status and a single "Restart Components" action:
 Restart uses "Option B": a single ``restart_requested_at`` timestamp in the
 config KV table; each component compares it to its own process start time and
 self-exits, and Docker's ``restart: unless-stopped`` policy brings it back. No
-Docker socket. See docs/superpowers/specs/2026-07-16-system-components-restart-design.md.
+Docker socket. See docs/SYSTEM_RESTART_DESIGN.md.
 """
 
 import asyncio

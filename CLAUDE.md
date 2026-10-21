@@ -79,7 +79,7 @@ cd web && npm run dev
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock   # pinned; compiled from requirements.txt + requirements-dev.txt
 ```
 
 ## Architecture
@@ -106,33 +106,52 @@ editorial-assistant-v3/
 ├── OUTPUT/                     # Processed outputs (gitignored)
 ├── tests/                      # Test suite
 ├── docs/                       # Documentation
-├── feature_list.json           # Development task queue
-└── planning/                   # Historical planning docs
-    ├── claude-progress.txt     # Progress tracking
-    ├── DESIGN_3.5.md           # Current design specification
-    └── DESIGN_4.0.md           # Future vision (planning only)
+│   ├── agents/                 # Issue tracker, triage labels, domain-doc rules
+│   └── adr/                    # Architecture decision records (created lazily)
+└── standalone-agents/          # Out-of-pipeline agent POCs
 ```
 
-## Long-Running Development Harness
+## Where the work is tracked
 
-Start every session with `./init.sh`, then read `planning/claude-progress.txt` and `feature_list.json` to select the next feature.
+**The roadmap is GitHub issues, not a file in this repo.** There is no
+`feature_list.json`, no progress file, and no `planning/` directory — they were
+competing, perpetually-stale copies of the issue tracker and were removed. If you
+find yourself about to write a status document, put it in the issue instead.
 
-### Workflow
+- **The roadmap** — the pinned [Roadmap] issue #357. Start here for orientation.
+- **Epics** — `#222`–`#234`, one per work area, each with native sub-issues.
+  Epic C (`#224`) is closed; the rest are open.
+- **Conventions** — `docs/agents/issue-tracker.md` (the `gh` recipes),
+  `docs/agents/triage-labels.md` (the five canonical labels),
+  `docs/agents/domain.md` (what to read before exploring).
 
-1. **Initializer**: Run `./init.sh` to load context
-2. **Select feature**: Pick next `pending` task from `feature_list.json`
-3. **Update status**: Mark as `in_progress`
-4. **Implement**: Complete the feature with tests
-5. **Verify**: Run tests, ensure exit criteria met
-6. **Update tracking**: Mark `completed`, update `planning/claude-progress.txt`
-7. **Commit**: Create attributed commit
+The repo is `public-media-work/cardigan` and images publish to
+`ghcr.io/public-media-work/cardigan-{api,worker,web,diarization}`. The older
+`ghcr.io/mriechers/cardigan-*` path is **retired**: after the repo moved orgs,
+`GITHUB_TOKEN` could no longer write another account's packages, which froze
+production at 2026-07-20 for two months. Don't reintroduce it.
 
-### Agent Assignment
+### Picking up work
 
-Tasks in `feature_list.json` have an `agent` field:
-- `orchestrator`: Claude Code handles directly (complex, multi-file)
-- `cli-agent/gemini`: Delegate to Gemini CLI for boilerplate
-- `cli-agent/claude`: Delegate to Claude CLI for documentation
+```bash
+./init.sh                                              # venv + git status + epics
+gh issue list --state open --label ready-for-agent     # fully-specified work
+gh issue view <n> --comments                           # read before starting
+```
+
+**Verify-already-fixed first.** A large share of this backlog was fixed in a later
+sprint but never closed. Before working an issue, grep the cited file or symbol on
+`main` — it may already be done. Close it with a comment if so.
+
+### Before you push
+
+CI gates on all three of these. Run them locally or CI will fail you:
+
+```bash
+ruff check .
+black --check .     # CI runs --check; use `black .` to fix
+pytest --tb=short -q
+```
 
 ## Git Commit Convention
 
@@ -149,15 +168,16 @@ Detailed description...
 
 ## Design Reference
 
-- **Current:** `planning/DESIGN_3.5.md` — v3.5 architecture (embedded chat, ingest pipeline, screengrabs)
-- **Future:** `planning/DESIGN_4.0.md` — v4.0 vision (Docker, plugin system, deferred features)
-- **Archived:** `planning/archive/DESIGN_v3.0.md` — original v3.0 design (historical)
+Design docs live next to the code they describe, or in the epic that owns the work:
 
-## Current Sprint
+- `docs/SYSTEM_RESTART_DESIGN.md` — system-components restart design (shipped)
+- `standalone-agents/youtube-copy-audit/FEATURE.md` — YouTube metadata POC scope
+- `docs/adr/` — architecture decision records (created lazily). `0001` — run V4 natively in an LXC (#470)
+- Epic scope lives in the epic issue (e.g. Epic L `#233`, Epic M `#234`,
+  Epic K `#232` for v5 hosting)
 
-**Sprint 2.1: Foundation & Infrastructure Reliability**
-
-See `feature_list.json` for task queue and `planning/claude-progress.txt` for status.
+Superseded design docs (`DESIGN_3.5.md`, `DESIGN_4.0.md`, `DESIGN_v3.0.md`) were
+removed in the roadmap consolidation and remain in git history.
 
 ## Airtable Integration (CRITICAL)
 
@@ -225,9 +245,9 @@ PBS Wisconsin content editors who use Cardigan as one tool among many in their d
 
 ## Notes for Claude Code
 
-1. **Check feature_list.json** before starting work
-2. **Update progress** after completing features
-3. **Run tests** before marking complete
+1. **Find work in GitHub issues** — see "Where the work is tracked" above
+2. **Verify-already-fixed first** — grep `main` before working any issue
+3. **Run `ruff check .`, `black --check .`, and `pytest`** before marking complete
 4. **Don't break the API contract** - OpenAPI spec is the source of truth (once defined)
 5. **Log feedback** - Append issues to `AGENT-FEEDBACK.md` if created
 6. **NEVER write to Airtable** - Read-only access for all AI agents
@@ -248,5 +268,8 @@ being migrated off. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context — `CONTEXT.md` + `docs/adr/` at the repo root.
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, both created
+lazily, when there is something worth recording. `docs/adr/` has its first
+record (`0001`, native V4 deploy); `CONTEXT.md` does not exist yet — write it
+when you have the first domain term worth pinning down.
 See `docs/agents/domain.md`.

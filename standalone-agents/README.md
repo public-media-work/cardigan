@@ -23,7 +23,7 @@ approval of the diff — write metadata back to the live video via the pbswi
 `youtube-post` guarded executor.
 
 See `youtube-copy-audit/README.md` for setup and the run book, `PROMPT.md` for
-agent guardrails, and `planning/YOUTUBE_METADATA_FEATURE.md` for the full
+agent guardrails, and `standalone-agents/youtube-copy-audit/FEATURE.md` for the full
 feature design this POC gates.
 
 ---

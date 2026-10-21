@@ -24,7 +24,7 @@ You MUST respond with ONLY valid JSON matching this exact structure. No markdown
     },
     "formatter": {
       "status": "fail",
-      "flags": ["review notes appear in transcript body"]
+      "flags": ["<describe the specific defect you actually observed>"]
     },
     "seo": {
       "status": "pass",
@@ -40,7 +40,10 @@ You MUST respond with ONLY valid JSON matching this exact structure. No markdown
 ## Rules
 
 1. Set `status` to `"pass"` or `"fail"` only
-2. Include specific, actionable flag text for any failure
+2. Include specific, actionable flag text for any failure. NEVER copy flag text from the
+   example above — it is a shape illustration, not a finding. Every flag must describe a
+   defect you actually observed in the output under review, and you must be able to point to
+   the passage that shows it.
 3. Set `overall` to `"fail"` if ANY phase has status `"fail"`
 4. Set `overall` to `"pass"` only if ALL phases pass
 5. Return ONLY the JSON object — no surrounding text, no markdown code fences

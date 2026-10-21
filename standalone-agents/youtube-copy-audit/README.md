@@ -9,7 +9,7 @@ This is a standalone agent kit (no Cardigan backend changes). It borrows the pbs
 workspace's existing YouTube skills read-only at runtime — the OAuth management
 token and the guarded write executor (`youtube-post/scripts/write_ops.py`) — and
 talks to the production Cardigan API for processing. The full-feature design this
-POC gates lives in `planning/YOUTUBE_METADATA_FEATURE.md`.
+POC gates lives in `standalone-agents/youtube-copy-audit/FEATURE.md`.
 
 ## Files
 

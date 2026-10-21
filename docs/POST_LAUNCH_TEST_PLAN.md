@@ -89,7 +89,7 @@ allowlisted email completes the magic-link and reaches the dashboard.
 ## §3 — Ingest scan smoke  *(smoke)*
 
 This is the "Ready for Work" surface the scanner feeds (and the target of the
-QoL cron work — see `planning/QOL_CRON_CATALOG.md`).
+QoL cron work — the QoL cron catalog was removed in the roadmap consolidation; see git history).
 
 ```bash
 # Trigger a manual scan of the mmingest server
@@ -189,7 +189,7 @@ still 200. Revoke the throwaway key afterwards:
 ## §7 — Soak / acceptance envelope  *(optional, long-running)*
 
 For a deeper go/no-go, run the 24h soak harness (full runbook in
-`planning/archive/sprint-5-staging-soak.md`):
+the sprint-5 staging-soak runbook, removed in the roadmap consolidation; see git history):
 
 ```bash
 CONSUMER_KEY=<key> bash scripts/sprint5_soak_monitor.sh    # 24h background monitor

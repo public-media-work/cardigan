@@ -1,8 +1,8 @@
 # Cardigan
-**PBS Wisconsin Digital Editorial Assistant v3.5**
+**PBS Wisconsin Digital Editorial Assistant**
 
-![CI](https://github.com/MarkOnFire/ai-editorial-assistant-v3/actions/workflows/ci.yml/badge.svg)
-![Version](https://img.shields.io/github/v/release/MarkOnFire/ai-editorial-assistant-v3?label=version)
+![CI](https://github.com/public-media-work/cardigan/actions/workflows/ci.yml/badge.svg)
+![Version](https://img.shields.io/github/v/release/public-media-work/cardigan?label=version)
 
 A production-ready system for processing video transcripts and generating SEO-optimized metadata (titles, descriptions, keywords) for streaming platforms. Built for PBS Wisconsin's editorial team, powered by **Cardigan** -- our Mister Rogers-inspired AI copy editor.
 
@@ -125,13 +125,13 @@ The system is designed around a single principle: editorial teams should spend t
 
 ```bash
 # Clone the repository
-git clone https://github.com/MarkOnFire/ai-editorial-assistant-v3.git
-cd ai-editorial-assistant-v3
+git clone https://github.com/public-media-work/cardigan.git
+cd cardigan
 
 # Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 
 # Install web dashboard dependencies
 cd web && npm install && cd ..
@@ -383,7 +383,7 @@ Key components include the `IngestPanel` for remote file management, `Screengrab
 ### Project Structure
 
 ```
-ai-editorial-assistant-v3/
+cardigan/
 ├── api/                        # FastAPI application
 │   ├── main.py                 # App entry point with lifespan management
 │   ├── routers/                # 9 API endpoint modules
@@ -436,9 +436,9 @@ The GitHub Actions workflow (`ci.yml`) runs on pull requests to `main`:
 # Initialize session (loads context)
 ./init.sh
 
-# Check current progress
-cat planning/claude-progress.txt
-cat feature_list.json | jq '.[] | select(.status == "pending")'
+# Check the roadmap and pick up work
+gh issue list --repo public-media-work/cardigan --state open --label epic
+gh issue view 357
 ```
 
 See [CLAUDE.md](CLAUDE.md) for AI development guidelines.
@@ -477,11 +477,11 @@ Edit `config/llm-config.json` to customize:
 
 | Version | Name | Highlights |
 |---------|------|------------|
-| [v3.5.0](https://github.com/MarkOnFire/ai-editorial-assistant-v3/releases/tag/v3.5.0) | Foundation Complete | CI pipeline, per-phase retry tracking, Langfuse integration |
-| [v3.3.0](https://github.com/MarkOnFire/ai-editorial-assistant-v3/releases/tag/v3.3.0) | UX Refinement | "Ready for Work" discovery page, contextual screengrabs, UX polish |
-| [v3.2.0](https://github.com/MarkOnFire/ai-editorial-assistant-v3/releases/tag/v3.2.0) | Chat Prototype | Embedded REST-based chat with Cardigan, DB persistence, slide-out panel |
-| [v3.1.0](https://github.com/MarkOnFire/ai-editorial-assistant-v3/releases/tag/v3.1.0) | Remote Ingest Watcher | Auto-discovery from PBS media server, screengrab attachment |
-| [v3.0.0](https://github.com/MarkOnFire/ai-editorial-assistant-v3/releases/tag/v3.0.0) | Core Architecture | FastAPI + SQLite + React rewrite, MCP integration, multi-model routing |
+| [v3.5.0](https://github.com/public-media-work/cardigan/releases/tag/v3.5.0) | Foundation Complete | CI pipeline, per-phase retry tracking, Langfuse integration |
+| [v3.3.0](https://github.com/public-media-work/cardigan/releases/tag/v3.3.0) | UX Refinement | "Ready for Work" discovery page, contextual screengrabs, UX polish |
+| [v3.2.0](https://github.com/public-media-work/cardigan/releases/tag/v3.2.0) | Chat Prototype | Embedded REST-based chat with Cardigan, DB persistence, slide-out panel |
+| [v3.1.0](https://github.com/public-media-work/cardigan/releases/tag/v3.1.0) | Remote Ingest Watcher | Auto-discovery from PBS media server, screengrab attachment |
+| [v3.0.0](https://github.com/public-media-work/cardigan/releases/tag/v3.0.0) | Core Architecture | FastAPI + SQLite + React rewrite, MCP integration, multi-model routing |
 
 ---
 
@@ -501,6 +501,18 @@ Edit `config/llm-config.json` to customize:
 | [FEATURE_REMOTE_INGEST_WATCHER.md](docs/FEATURE_REMOTE_INGEST_WATCHER.md) | Ingest watcher feature specification |
 
 ---
+
+## Lineage
+
+Cardigan is the third generation of this tool. The original codebase is preserved
+on a branch here, **for archival reference only** - it is not maintained, not
+runnable against the current stack, and shares no code with `main`:
+
+- [`legacy/ai-editorial-assistant`](../../tree/legacy/ai-editorial-assistant) - the v1
+  editorial assistant (44 commits, 2025). Superseded by v3, which became Cardigan.
+
+The repository was formerly `MarkOnFire/ai-editorial-assistant-v3`; some badges above
+still reference that path, which now redirects here.
 
 ## License
 

@@ -71,9 +71,16 @@ async def resolve_escalated_model(current_model: str | None, exclude_variants: l
 # Flag-text substrings (case-insensitive) that denote a failure a stronger
 # model cannot fix — editorial review notes or missing input data.
 NONFIXABLE_FLAG_PATTERNS = [
-    "review note",
-    "needs_review",
-    "needs review",
+    # NOTE: review-notes / needs_review are deliberately ABSENT here (QA-1).
+    # Substring-matching the validator's prose could not distinguish "review
+    # notes are present when they should not be" from "the review-notes block
+    # is missing" -- both contain "review note", so an ordinary, model-fixable
+    # formatter miss was routed to a human with a message about media_id and
+    # proper nouns. Since a single non-fixable flag suppresses escalation for
+    # every fixable flag beside it, one misread sentence stalled the whole job.
+    # The genuine case is detected on the ARTIFACT instead, via
+    # FORMATTER_CONTRACT_MARKERS below: if the formatter really did leave review
+    # notes or a needs_review status, they are in its output and we can see them.
     "media id",
     "media_id",
     # Caption-quality / verification-reminder flags observed on Here & Now web

@@ -67,15 +67,25 @@ def _seo_output(
     ),
     tags: list[str] | None = None,
     include_tags_section: bool = True,
+    legacy_fenced_tags: bool = False,
 ) -> str:
     if tags is None:
         tags = [f"keyword{i}" for i in range(1, 18)]  # 17 items -- within 15-20
     tags_section = ""
     if include_tags_section:
         tags_line = ", ".join(tags)
-        tags_section = (
-            "## Tags (Platform-Specific)\n\n### YouTube Tags (15-20 recommended)\n\n```\n" f"{tags_line}\n```\n"
-        )
+        if legacy_fenced_tags:
+            # Pre-#380 outputs carried the list in a fenced code block.
+            tags_section = (
+                "## Tags (Platform-Specific)\n\n### YouTube Tags (15-20 recommended)\n\n```\n" f"{tags_line}\n```\n"
+            )
+        else:
+            # Current prompts/seo.md shape: plain labelled paragraph (#380).
+            tags_section = (
+                "## Tags (Platform-Specific)\n\n### YouTube Tags (15-20 recommended)\n\n"
+                "**Tags (paste-ready):**\n"
+                f"{tags_line}\n"
+            )
     return (
         "# SEO Report\n\n"
         "### Title (Final Recommendation)\n\n"
@@ -321,6 +331,36 @@ class TestSeoKeywordsCount:
         seo = _seo_output(include_tags_section=False)
         result = run_lint({"seo_output": seo}, rules)
         assert _violations_for(result, "seo", "lint.seo.keywords_count") == []
+
+    def test_legacy_fenced_tags_still_extract(self):
+        """Outputs generated before #380 carry the tags in a code fence.
+
+        Those rows still exist and can be re-linted; the fenced shape must
+        keep extracting alongside the current unfenced one.
+        """
+        rules = _rules(keyword_min=15, keyword_max=20)
+        result = run_lint(
+            {"seo_output": _seo_output(tags=["only", "three", "tags"], legacy_fenced_tags=True)},
+            rules,
+        )
+        violations = _violations_for(result, "seo", "lint.seo.keywords_count")
+        assert len(violations) == 1
+
+    def test_label_followed_by_fence_uses_fenced_list(self):
+        """A model that emits the label AND a fence must not count ``` as a tag."""
+        rules = _rules(keyword_min=15, keyword_max=20)
+        seo = (
+            "# SEO Report\n\n"
+            "### YouTube Tags (15-20 recommended)\n\n"
+            "**Tags (paste-ready):**\n"
+            "```\n"
+            "only, three, tags\n"
+            "```\n"
+        )
+        result = run_lint({"seo_output": seo}, rules)
+        violations = _violations_for(result, "seo", "lint.seo.keywords_count")
+        assert len(violations) == 1
+        assert "3" in violations[0].message
 
 
 # ---------------------------------------------------------------------------
