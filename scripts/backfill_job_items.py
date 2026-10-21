@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Backfill job_items for jobs that ran before the item model existed (#329).
+"""Backfill job_items for jobs that ran before the item model existed (#426).
 
-Items are normally extracted when a job completes. This script rebuilds them
-for historical jobs by re-reading their phase outputs from disk and (when the
-job has an Airtable link) re-fetching the SST record.
+TEMPORARY: delete this script together with
+``api/services/legacy_item_adapter.py`` when the first generator lands.
 
-Safe to re-run: ``upsert_job_items`` keys on (job_id, key) and preserves any
-verdict an editor already gave.
+Rebuilds items for historical jobs by re-reading their phase outputs through
+the legacy adapter and (when the job has a Media ID or a pinned record)
+re-fetching the SST record. Resolving a record by Media ID pins it to the job.
+
+Safe to re-run: ``upsert_job_items`` keys on (job_id, key) and never
+overwrites an editor's review state or hand edit.
 
 Usage::
 
-    python scripts/backfill_job_items.py --dry-run          # report only
-    python scripts/backfill_job_items.py --job 23           # one job
-    python scripts/backfill_job_items.py --all              # every completed job
+    python scripts/backfill_job_items.py --dry-run --job 23   # report only
+    python scripts/backfill_job_items.py --job 23             # one job
+    python scripts/backfill_job_items.py --all                # every completed job
     python scripts/backfill_job_items.py --all --no-airtable  # skip SST lookups
 """
 
@@ -22,6 +25,7 @@ import argparse
 import asyncio
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -34,8 +38,9 @@ from api.services.database import (  # noqa: E402
     list_jobs,
     upsert_job_items,
 )
-from api.services.item_sync import _fetch_sst_context, _read_outputs  # noqa: E402
-from api.services.items import build_items  # noqa: E402
+from api.services.item_sync import fetch_sst_context, read_outputs  # noqa: E402
+from api.services.items import build_items, premiere_date_proposals  # noqa: E402
+from api.services.legacy_item_adapter import extract_legacy_proposals  # noqa: E402
 
 
 async def backfill_job(job_id: int, *, dry_run: bool, use_airtable: bool) -> dict:
@@ -44,23 +49,23 @@ async def backfill_job(job_id: int, *, dry_run: bool, use_airtable: bool) -> dic
     if job is None:
         return {"job_id": job_id, "error": "not found"}
 
-    outputs = _read_outputs(job.project_path)
+    outputs = read_outputs(job.project_path)
     present = [name for name, text in outputs.items() if text]
 
-    sst_context = await _fetch_sst_context(job) if use_airtable else None
+    sst_context = await fetch_sst_context(job, pin=not dry_run) if use_airtable else None
+
+    proposals = extract_legacy_proposals(
+        phase_models={phase.name: phase.model for phase in job.phases if phase.model},
+        **outputs,
+    )
+    proposals.update(premiere_date_proposals(sst_context))
 
     rows = build_items(
         job_id=job_id,
+        proposals=proposals,
         sst_context=sst_context,
-        phase_models={phase.name: phase.model for phase in job.phases if phase.model},
         content_type=job.content_type or "full",
-        **outputs,
     )
-
-    populated = sum(1 for row in rows if row["proposed_value"])
-    by_status: dict[str, int] = {}
-    for row in rows:
-        by_status[row["status"]] = by_status.get(row["status"], 0) + 1
 
     if not dry_run:
         await upsert_job_items(job_id, rows)
@@ -72,8 +77,9 @@ async def backfill_job(job_id: int, *, dry_run: bool, use_airtable: bool) -> dic
         "outputs_found": present,
         "sst_context": sst_context is not None,
         "items": len(rows),
-        "populated": populated,
-        "by_status": by_status,
+        "by_generation": Counter(row["generation_state"] for row in rows),
+        "by_origin": Counter(row["origin"] for row in rows if row["generation_state"] == "ready"),
+        "with_basis": sum(1 for row in rows if row["basis_value"]),
     }
 
 
@@ -86,7 +92,7 @@ async def main() -> int:
     parser.add_argument(
         "--no-airtable",
         action="store_true",
-        help="Skip SST lookups; every item lands in current_state='unknown'",
+        help="Skip SST lookups; items get no basis and current_state='unknown'",
     )
     args = parser.parse_args()
 
@@ -106,12 +112,13 @@ async def main() -> int:
                 print(f"  job {job_id}: {summary['error']}")
                 continue
 
-            statuses = ", ".join(f"{k}={v}" for k, v in sorted(summary["by_status"].items()))
+            generation = ", ".join(f"{k}={v}" for k, v in sorted(summary["by_generation"].items()))
+            origins = ", ".join(f"{k}={v}" for k, v in sorted(summary["by_origin"].items()))
             print(
                 f"  job {summary['job_id']:>4} {str(summary['project'])[:28]:28} "
                 f"media_id={str(summary['media_id']):20} "
                 f"sst={'yes' if summary['sst_context'] else 'no ':3} "
-                f"items={summary['items']:2} populated={summary['populated']:2}  {statuses}"
+                f"items={summary['items']:2} basis={summary['with_basis']:2}  {generation}  [{origins}]"
             )
             if not summary["outputs_found"]:
                 print("        ^ no phase outputs on disk — items exist but carry no proposals")

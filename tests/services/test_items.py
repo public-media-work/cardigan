@@ -1,74 +1,32 @@
-"""Unit tests for item extraction and derivation (#329).
+"""Unit tests for item assembly and the legacy adapter (#426).
 
-Pure tests over ``api.services.items`` — no DB, no network. The fixtures below
-mirror the documented output shapes in ``prompts/analyst.md`` and
+Pure tests over ``api.services.items`` and ``api.services.legacy_item_adapter``
+— no DB, no network. ``SEO_MD`` mirrors the documented output shape in
 ``prompts/seo.md``; where a heading is asserted verbatim it is because the
 extractor keys on it.
 """
 
-import pytest
+import json
+from pathlib import Path
 
-from api.models.item import CurrentState, ItemLayer, ItemSource, ItemStatus
+from api.models.item import CurrentState, GenerationState, ItemCategory, Origin
 from api.services.items import (
+    COPY_GENERATION_OFF,
     DETERMINISTIC_DATE_KEYS,
     ITEM_SPECS,
     LADDER_FLAGGED,
+    NOT_GENERATED,
     SPECS_BY_KEY,
-    SST_STATUS_FIELD,
+    SST_FIELD_IDS,
+    SST_PREMIERE_FIELD_ID,
+    SST_STATUS_FIELD_ID,
+    Proposal,
     build_items,
     derive_current_state,
-    extract_context_items,
-    extract_deliverable_items,
     normalize_sst_record,
+    premiere_date_proposals,
 )
-
-# Mirrors prompts/analyst.md's "Brainstorming Document Structure".
-ANALYST_MD = """# Brainstorming Document
-**Project:** 6POL0111
-
-## Summary
-
-An episode about the state budget.
-
-## Key Themes
-
-1. **Redistricting**: maps and courts
-2. **Budget**: the surplus fight
-
-## Speakers & Roles
-
-| Speaker | Role/Title | Context | First Appearance |
-|---------|------------|---------|------------------|
-| Zac Schultz | Host | Anchors the panel | 0:00 |
-
-## Structural Breakdown
-
-### Act 1: Introduction (0:00 - 2:00)
-- Cold open
-
-## SEO Keywords (Preliminary)
-
-**Primary:** wisconsin politics
-
-**Secondary:**
-- state budget
-
-**Location-Specific:**
-- Madison
-- Dane County
-
-**Topical:**
-- redistricting
-
-## Editorial Opportunities
-
-- **Hook**: The surplus nobody spent
-- **Unique Angle**: Two parties, one stalemate
-
-## Production Notes
-
-Caption quality good.
-"""
+from api.services.legacy_item_adapter import extract_legacy_proposals
 
 # Mirrors prompts/seo.md — note "### Title (Final Recommendation)"; the
 # extractor matches on the "### Title" prefix.
@@ -99,279 +57,302 @@ Zac Schultz breaks down the collapsed surplus negotiation.
 A longer description of the episode with rather more detail in it.
 """
 
-
-class TestContextExtraction:
-    def test_extracts_all_four_context_items(self):
-        context = extract_context_items(ANALYST_MD)
-
-        assert "Redistricting" in context["context.themes"]
-        assert "Zac Schultz" in context["context.speakers"]
-        assert "Madison" in context["context.place_names"]
-        assert "surplus nobody spent" in context["context.editorial_angles"]
-
-    def test_place_names_come_from_the_location_specific_block_only(self):
-        """Location-Specific is nested inside SEO Keywords; sibling blocks
-        (Primary/Secondary/Topical) must not bleed in."""
-        context = extract_context_items(ANALYST_MD)
-        place_names = context["context.place_names"]
-
-        assert "Madison" in place_names
-        assert "Dane County" in place_names
-        assert "redistricting" not in place_names  # the Topical block
-        assert "state budget" not in place_names  # the Secondary block
-
-    def test_section_stops_at_next_heading(self):
-        context = extract_context_items(ANALYST_MD)
-
-        assert "Caption quality" not in context["context.editorial_angles"]
-        assert "Act 1" not in context["context.speakers"]
-
-    def test_missing_sections_yield_none_not_an_error(self):
-        context = extract_context_items("# Brainstorming Document\n\nNothing here.\n")
-
-        assert set(context) == {
-            "context.themes",
-            "context.speakers",
-            "context.place_names",
-            "context.editorial_angles",
-        }
-        assert all(value is None for value in context.values())
-
-    def test_empty_input_is_safe(self):
-        assert all(value is None for value in extract_context_items("").values())
+TITLE_ID = SPECS_BY_KEY["title"].sst_field_id
+SHORT_ID = SPECS_BY_KEY["short_description"].sst_field_id
 
 
-class TestDeliverableExtraction:
-    def test_extracts_the_three_governed_fields(self):
-        values = extract_deliverable_items(seo_md=SEO_MD)
-
-        assert values["title"] == "Polling the failed surplus deal | Inside Wisconsin Politics"
-        assert values["short_description"] == "Zac Schultz breaks down the collapsed surplus negotiation."
-        assert values["long_description"].startswith("A longer description")
-
-    def test_transcript_is_taken_whole(self):
-        body = "SPEAKER: line one.\n\nSPEAKER: line two.\n"
-        values = extract_deliverable_items(formatter_md=body)
-
-        assert values["formatted_transcript"] == body
-
-    def test_no_extractor_for_the_drifting_fields(self):
-        """The five drifting SEO fields must never be parsed out of prose —
-        that would yield confidently-wrong values rather than missing ones."""
-        values = extract_deliverable_items(seo_md=SEO_MD)
-
-        for key in ("social_description", "social_tags", "facebook_description", "hashtags", "keywords"):
-            assert key not in values
+def sst(**by_key):
+    """Build a normalized SST context, addressing fields by item key."""
+    context = {field_id: None for field_id in SST_FIELD_IDS}
+    context["record_id"] = "recTEST"
+    for key, value in by_key.items():
+        if key == "ladder":
+            context[SST_STATUS_FIELD_ID] = value
+        elif key == "premiere":
+            context[SST_PREMIERE_FIELD_ID] = value
+        else:
+            context[SPECS_BY_KEY[key].sst_field_id] = value
+    return context
 
 
-class TestCurrentStateDerivation:
-    def test_never_fetched_is_unknown(self):
-        assert derive_current_state("anything", "Ready for Review", fetched=False) == CurrentState.unknown
+def by_key(rows):
+    return {row["key"]: row for row in rows}
 
-    @pytest.mark.parametrize("blank", [None, "", "   ", "\n"])
-    def test_blank_value_is_empty(self, blank):
-        assert derive_current_state(blank, None, fetched=True) == CurrentState.empty
 
-    def test_empty_wins_over_an_approved_record(self):
-        """Cardigan is first author for a blank field regardless of where the
-        record sits on the ladder — the 'fill gaps' half of the split."""
-        state = derive_current_state("", "Final Copy & Images Approved by Producer", fetched=True)
-
-        assert state == CurrentState.empty
-
-    @pytest.mark.parametrize(
-        "ladder",
-        [
-            "Edited & Approved by Digital",
-            "Edited & Approved by Promotions",
-            "Final Copy & Images Approved by Producer",
-        ],
-    )
-    def test_approved_ladder_positions_are_reviewed(self, ladder):
-        assert derive_current_state("a value", ladder, fetched=True) == CurrentState.reviewed
-
-    @pytest.mark.parametrize("ladder", [None, "", "Ready for Review"])
-    def test_unblessed_records_are_unreviewed(self, ladder):
-        assert derive_current_state("a value", ladder, fetched=True) == CurrentState.unreviewed
-
-    def test_producer_issue_flags_even_a_blank_field(self):
-        """Producer Issue outranks emptiness — Promo Notes must be surfaced
-        before anything is written to that record."""
-        assert derive_current_state("", LADDER_FLAGGED, fetched=True) == CurrentState.flagged
-        assert derive_current_state("a value", LADDER_FLAGGED, fetched=True) == CurrentState.flagged
+def legacy(**kwargs):
+    return extract_legacy_proposals(phase_models={"seo": "haiku", "formatter": "sonnet"}, **kwargs)
 
 
 class TestRegistry:
     def test_keys_are_unique(self):
         keys = [spec.key for spec in ITEM_SPECS]
-
         assert len(keys) == len(set(keys))
 
+    def test_sst_field_ids_are_unique(self):
+        ids = [spec.sst_field_id for spec in ITEM_SPECS if spec.sst_field_id]
+        assert len(ids) == len(set(ids))
+
+    def test_no_context_items(self):
+        """Speakers, places, themes and angles are bundle parts, not items."""
+        assert not any(spec.key.startswith("context.") for spec in ITEM_SPECS)
+        assert {spec.category for spec in ITEM_SPECS} <= set(ItemCategory)
+
+    def test_transcript_has_no_sst_field(self):
+        assert SPECS_BY_KEY["formatted_transcript"].sst_field_id is None
+
+    def test_dates_are_deterministic(self):
+        assert all(SPECS_BY_KEY[key].origin == Origin.deterministic for key in DETERMINISTIC_DATE_KEYS)
+
     def test_imdb_link_is_never_modelled(self):
-        """It's a url-typed field humans use as a scratchpad ("pending",
-        "done, pending"). Writing it would destroy tracking notes."""
+        """A url field humans use as a scratchpad ("done, pending")."""
         assert "imdb_link" not in SPECS_BY_KEY
-        assert all(spec.airtable_field != "IMDb Link" for spec in ITEM_SPECS)
+        assert "fldPHQv2Gi4OMe6cA" not in SST_FIELD_IDS
 
-    def test_context_items_never_target_an_airtable_field(self):
-        for spec in ITEM_SPECS:
-            if spec.layer == ItemLayer.context:
-                assert spec.airtable_field is None
 
-    def test_blocked_specs_declare_a_reason(self):
-        for spec in ITEM_SPECS:
-            if spec.is_blocked:
-                assert spec.blocked_on.startswith(("integration:", "structured_output:"))
+class TestCurrentStateDerivation:
+    def test_never_fetched_is_unknown(self):
+        assert derive_current_state("x", None, fetched=False) == CurrentState.unknown
+
+    def test_blank_field_is_empty_even_on_an_approved_record(self):
+        state = derive_current_state("", "Edited & Approved by Digital", fetched=True)
+        assert state == CurrentState.empty
+
+    def test_flagged_wins_over_a_value(self):
+        assert derive_current_state("x", LADDER_FLAGGED, fetched=True) == CurrentState.flagged
+
+    def test_value_on_approved_record_is_reviewed(self):
+        state = derive_current_state("x", "Final Copy & Images Approved by Producer", fetched=True)
+        assert state == CurrentState.reviewed
+
+    def test_value_without_approval_is_unreviewed(self):
+        assert derive_current_state("x", "Ready for Review", fetched=True) == CurrentState.unreviewed
 
 
 class TestNormalizeSstRecord:
-    def test_maps_fields_via_the_registry(self):
-        record = {
-            "id": "recABC",
-            "fields": {
-                "Media ID": "6POL0111",
-                "Release Title": "Existing title",
-                "YouTube Link": "https://youtu.be/abc",
-                SST_STATUS_FIELD: "Final Copy & Images Approved by Producer",
-                "Digital Premiere": "2026-05-28T22:00:00.000Z",
-            },
-        }
+    def test_reads_fields_by_id(self):
+        record = {"id": "rec1", "fields": {TITLE_ID: "A title", SST_STATUS_FIELD_ID: "Ready for Review"}}
 
         context = normalize_sst_record(record)
 
-        assert context["record_id"] == "recABC"
-        assert context["title"] == "Existing title"
-        assert context["youtube_link"] == "https://youtu.be/abc"
-        assert context[SST_STATUS_FIELD] == "Final Copy & Images Approved by Producer"
-        assert context["digital_premiere"] == "2026-05-28T22:00:00.000Z"
+        assert context[TITLE_ID] == "A title"
+        assert context[SST_STATUS_FIELD_ID] == "Ready for Review"
+        assert context["record_id"] == "rec1"
 
-    def test_absent_fields_normalize_to_none(self):
-        context = normalize_sst_record({"id": "recABC", "fields": {}})
+    def test_ignores_fields_keyed_by_name(self):
+        """A name-keyed record must not be mistaken for an id-keyed one: the
+        base renames fields in place, so names are never trusted."""
+        record = {"id": "rec1", "fields": {"Release Title": "A title"}}
 
-        assert context["title"] is None
-        assert context[SST_STATUS_FIELD] is None
+        assert normalize_sst_record(record)[TITLE_ID] is None
+
+
+class TestLegacyAdapter:
+    def test_seo_fields_are_inferred_with_provenance(self):
+        proposals = legacy(seo_md=SEO_MD)
+
+        title = proposals["title"]
+        assert title.value.startswith("Polling the failed surplus deal")
+        assert title.origin == Origin.inferred
+        assert title.generator == "legacy_adapter:seo"
+        assert title.model == "haiku"
+
+    def test_transcript_is_inferred(self):
+        """Today's formatter is a model, so its transcript is inferred."""
+        proposal = legacy(formatter_md="Speaker 1: hello")["formatted_transcript"]
+        assert proposal.origin == Origin.inferred
+        assert proposal.model == "sonnet"
+
+    def test_missing_output_yields_no_proposal(self):
+        assert legacy() == {}
+
+    def test_present_output_without_a_section_yields_an_empty_proposal(self):
+        proposals = legacy(seo_md="# SEO Report\n\nNothing parseable here.\n")
+        assert proposals["title"].value is None
+
+    def test_never_reads_the_analyst(self):
+        """The analyst's material belongs to the context bundle."""
+        import inspect
+
+        assert "analyst" not in inspect.signature(extract_legacy_proposals).parameters
+
+
+class TestPremiereDates:
+    def test_dates_follow_digital_premiere(self):
+        proposals = premiere_date_proposals(sst(premiere="2026-05-28T22:00:00.000Z"))
+
+        assert {proposals[key].value for key in DETERMINISTIC_DATE_KEYS} == {"2026-05-28"}
+        assert all(proposals[key].origin == Origin.deterministic for key in DETERMINISTIC_DATE_KEYS)
+
+    def test_no_record_means_unavailable(self):
+        proposal = premiere_date_proposals(None)["media_manager_date"]
+        assert proposal.value is None
+        assert proposal.missing_state == GenerationState.unavailable
+        assert proposal.missing_reason == "no_sst_record"
+
+    def test_record_without_premiere_means_unavailable(self):
+        proposal = premiere_date_proposals(sst())["protrack_date"]
+        assert proposal.missing_reason == "field:digital_premiere"
 
 
 class TestBuildItems:
-    def _context(self, **overrides):
-        base = {
-            SST_STATUS_FIELD: None,
-            "digital_premiere": "2026-05-28T22:00:00.000Z",
-        }
-        base.update(overrides)
-        return base
+    def test_one_row_per_spec(self):
+        rows = build_items(job_id=1, proposals={})
+        assert [row["key"] for row in rows] == [spec.key for spec in ITEM_SPECS]
 
-    def test_builds_one_row_per_registered_spec(self):
-        rows = build_items(job_id=1, analyst_md=ANALYST_MD, seo_md=SEO_MD)
+    def test_every_row_starts_proposed(self):
+        rows = build_items(job_id=1, proposals=legacy(seo_md=SEO_MD))
+        assert {row["review_state"] for row in rows} == {"proposed"}
 
-        assert len(rows) == len(ITEM_SPECS)
-        assert {row["key"] for row in rows} == set(SPECS_BY_KEY)
+    def test_ready_item_carries_its_proposal(self):
+        row = by_key(build_items(job_id=1, proposals=legacy(seo_md=SEO_MD)))["title"]
 
-    def test_no_sst_context_means_everything_is_unknown(self):
-        """The state for 27 of 30 production jobs today (#331)."""
-        rows = build_items(job_id=1, seo_md=SEO_MD, sst_context=None)
+        assert row["generation_state"] == "ready"
+        assert row["generation_reason"] is None
+        assert row["origin"] == "inferred"
+        assert row["proposed_value"].startswith("Polling")
+        assert row["generator"] == "legacy_adapter:seo"
+        assert row["generated_at"] is not None
 
-        assert all(row["current_state"] == CurrentState.unknown.value for row in rows)
-        assert all(row["current_fetched_at"] is None for row in rows)
+    def test_no_record_means_no_basis_and_unknown(self):
+        rows = build_items(job_id=1, proposals=legacy(seo_md=SEO_MD))
 
-    def test_drifting_fields_ship_blocked_with_no_value(self):
-        rows = {row["key"]: row for row in build_items(job_id=1, seo_md=SEO_MD)}
+        assert all(row["basis_value"] is None for row in rows)
+        assert all(row["current_state"] == "unknown" for row in rows)
+        assert all(row["basis_fetched_at"] is None for row in rows)
 
-        for key in ("social_description", "social_tags", "facebook_description", "hashtags", "keywords"):
-            assert rows[key]["status"] == ItemStatus.awaiting_source.value
-            assert rows[key]["source_blocked_on"] == "structured_output:seo"
-            assert rows[key]["proposed_value"] is None
+    def test_basis_is_the_target_value_at_generation(self):
+        """A non-empty basis is what makes a proposal a suggestion."""
+        context = sst(short_description="What the producer wrote.", ladder="Edited & Approved by Digital")
 
-    def test_link_items_are_blocked_on_integrations(self):
-        rows = {row["key"]: row for row in build_items(job_id=1)}
+        row = by_key(build_items(job_id=1, proposals=legacy(seo_md=SEO_MD), sst_context=context))["short_description"]
 
-        assert rows["youtube_link"]["source_blocked_on"] == "integration:youtube_api"
-        assert rows["final_website_link"]["source_blocked_on"] == "integration:portal"
-        assert rows["media_manager_iframe"]["source_blocked_on"] == "integration:mm_api"
-        assert rows["eidr_id"]["source_blocked_on"] == "integration:eidr"
+        assert row["basis_value"] == "What the producer wrote."
+        assert row["current_state"] == "reviewed"
+        assert row["proposed_value"].startswith("Zac Schultz")
 
-    def test_dates_derive_from_digital_premiere_and_auto_approve_when_empty(self):
-        rows = {row["key"]: row for row in build_items(job_id=1, sst_context=self._context())}
+    def test_blank_target_is_a_fill(self):
+        row = by_key(build_items(job_id=1, proposals=legacy(seo_md=SEO_MD), sst_context=sst(title="   ")))["title"]
 
-        for key in DETERMINISTIC_DATE_KEYS:
-            assert rows[key]["proposed_value"] == "2026-05-28"
-            assert rows[key]["status"] == ItemStatus.approved.value
-            assert rows[key]["source"] == ItemSource.deterministic.value
+        assert row["basis_value"] is None
+        assert row["current_state"] == "empty"
 
-    def test_dates_never_silently_overwrite_an_existing_value(self):
-        """Fill-only: a date a human already set goes to the editor instead."""
-        context = self._context(entered_youtube_date="2026-01-01")
-        rows = {row["key"]: row for row in build_items(job_id=1, sst_context=context)}
+    def test_structurally_unavailable_items(self):
+        rows = by_key(build_items(job_id=1, proposals=legacy(seo_md=SEO_MD)))
 
-        assert rows["entered_youtube_date"]["status"] == ItemStatus.pending_review.value
-        assert rows["media_manager_date"]["status"] == ItemStatus.approved.value
+        assert rows["keywords"]["generation_state"] == "unavailable"
+        assert rows["keywords"]["generation_reason"] == "structured_output:seo"
+        assert rows["youtube_link"]["generation_reason"] == "integration:youtube_api"
+        assert rows["keywords"]["proposed_value"] is None
 
-    def test_dates_block_when_premiere_is_missing(self):
-        context = self._context(digital_premiere=None)
-        rows = {row["key"]: row for row in build_items(job_id=1, sst_context=context)}
+    def test_unavailable_items_still_carry_their_basis(self):
+        context = sst(keywords="politics, budget")
 
-        for key in DETERMINISTIC_DATE_KEYS:
-            assert rows[key]["status"] == ItemStatus.awaiting_source.value
-            assert rows[key]["source_blocked_on"] == "field:digital_premiere"
+        row = by_key(build_items(job_id=1, proposals={}, sst_context=context))["keywords"]
 
-    def test_malformed_premiere_does_not_raise(self):
-        context = self._context(digital_premiere="not a date")
-        rows = {row["key"]: row for row in build_items(job_id=1, sst_context=context)}
+        assert row["generation_state"] == "unavailable"
+        assert row["basis_value"] == "politics, budget"
 
-        assert rows["protrack_date"]["status"] == ItemStatus.awaiting_source.value
+    def test_missing_phase_means_not_generated(self):
+        row = by_key(build_items(job_id=1, proposals={}))["title"]
+        assert row["generation_state"] == "unavailable"
+        assert row["generation_reason"] == NOT_GENERATED
 
-    def test_char_limits_come_from_house_style(self):
-        rows = {row["key"]: row for row in build_items(job_id=1, seo_md=SEO_MD)}
+    def test_unparseable_output_is_a_failure(self):
+        proposals = legacy(seo_md="# SEO Report\n\nNothing parseable here.\n")
 
-        assert rows["short_description"]["char_limit"] == 90
-        assert rows["long_description"]["char_limit"] == 350
-        assert rows["title"]["char_limit"] == 80
-        assert rows["formatted_transcript"]["char_limit"] is None
+        row = by_key(build_items(job_id=1, proposals=proposals))["title"]
 
-    def test_provenance_records_the_producing_phase_and_model(self):
-        rows = {
-            row["key"]: row
-            for row in build_items(
+        assert row["generation_state"] == "failed"
+        assert row["generation_reason"] == "no_value_extracted"
+
+    def test_copy_generation_off(self):
+        """Copy items still exist, with their basis, but nothing is proposed."""
+        context = sst(title="The current title")
+
+        rows = by_key(
+            build_items(
                 job_id=1,
-                analyst_md=ANALYST_MD,
-                seo_md=SEO_MD,
-                phase_models={"seo": "anthropic/claude-sonnet-5", "analyst": "openai/gpt-5"},
+                proposals=legacy(seo_md=SEO_MD, formatter_md="text"),
+                sst_context=context,
+                copy_generation=False,
+            )
+        )
+
+        title = rows["title"]
+        assert title["generation_state"] == "unavailable"
+        assert title["generation_reason"] == COPY_GENERATION_OFF
+        assert title["proposed_value"] is None
+        assert title["basis_value"] == "The current title"
+        # Non-copy items are unaffected.
+        assert rows["formatted_transcript"]["generation_state"] == "ready"
+
+    def test_dates_are_deterministic_and_never_auto_accepted(self):
+        """Review is the editor's axis: a fill-only date is still proposed."""
+        proposals = premiere_date_proposals(sst(premiere="2026-05-28"))
+
+        row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(premiere="2026-05-28")))[
+            "media_manager_date"
+        ]
+
+        assert row["origin"] == "deterministic"
+        assert row["proposed_value"] == "2026-05-28"
+        assert row["review_state"] == "proposed"
+        assert row["model"] is None
+
+    def test_a_set_date_becomes_the_basis(self):
+        context = sst(premiere="2026-05-28", media_manager_date="2026-05-30")
+
+        row = by_key(build_items(job_id=1, proposals=premiere_date_proposals(context), sst_context=context))[
+            "media_manager_date"
+        ]
+
+        assert row["basis_value"] == "2026-05-30"
+        assert row["proposed_value"] == "2026-05-28"
+
+    def test_char_limit_flag_is_advisory(self):
+        proposals = {
+            "short_description": Proposal(value="x" * 500, origin=Origin.inferred, generator="test"),
+        }
+
+        row = by_key(build_items(job_id=1, proposals=proposals))["short_description"]
+
+        assert row["generation_state"] == "ready"
+        assert row["review_state"] == "proposed"
+        assert [flag["check"] for flag in row["flags"]] == ["char_limit"]
+
+    def test_spend_is_recorded_when_a_generator_reports_it(self):
+        proposals = {
+            "title": Proposal(
+                value="T",
+                origin=Origin.inferred,
+                generator="seo_title",
+                model="m",
+                input_tokens=100,
+                output_tokens=20,
+                cost_usd=0.001,
             )
         }
 
-        assert rows["title"]["phase"] == "seo"
-        assert rows["title"]["model"] == "anthropic/claude-sonnet-5"
-        assert rows["context.themes"]["model"] == "openai/gpt-5"
+        row = by_key(build_items(job_id=1, proposals=proposals))["title"]
 
-    def test_producer_approved_record_marks_populated_fields_reviewed(self):
-        context = self._context(
-            **{SST_STATUS_FIELD: "Final Copy & Images Approved by Producer", "title": "Existing title"}
-        )
-        rows = {row["key"]: row for row in build_items(job_id=1, seo_md=SEO_MD, sst_context=context)}
+        assert (row["input_tokens"], row["output_tokens"], row["cost_usd"]) == (100, 20, 0.001)
 
-        assert rows["title"]["current_state"] == CurrentState.reviewed.value
-        assert rows["title"]["current_value"] == "Existing title"
-        # The proposal still stands — 'reviewed' means confirm, not refuse.
-        assert rows["title"]["proposed_value"].startswith("Polling the failed surplus deal")
-        # A blank field on the same approved record is still Cardigan's to fill.
-        assert rows["short_description"]["current_state"] == CurrentState.empty.value
-
-    def test_nothing_is_ever_blocked_by_a_flag(self):
-        """No status in the model can prevent an editor from approving."""
-        rows = build_items(job_id=1, analyst_md=ANALYST_MD, seo_md=SEO_MD)
-
-        assert all(row["status"] != "blocked" for row in rows)
-        assert all(row["status"] != "paused" for row in rows)
+    def test_rows_never_carry_an_edit(self):
+        """Hand edits belong to the editor; assembly never writes one."""
+        rows = build_items(job_id=1, proposals=legacy(seo_md=SEO_MD))
+        assert all("edited_value" not in row for row in rows)
 
 
 class TestShippedConfigGate:
     def test_item_extraction_is_off_by_default(self):
-        """The worker's item hook performs an Airtable lookup per completed
-        job. It must stay inert in the shipped config until the approval
-        surface exists; the dev instance flips it on locally."""
-        import json
-        from pathlib import Path
-
+        """The worker's item hook performs an AirTable lookup per completed
+        job. It must stay inert in the shipped config until the job page
+        exists; the dev instance flips it on locally."""
         config = json.loads(Path("config/llm-config.json").read_text())
 
         assert config["routing"]["items"]["enabled"] is False
+
+    def test_copy_generation_defaults_on(self):
+        config = json.loads(Path("config/llm-config.json").read_text())
+
+        assert config["routing"]["items"]["copy_generation"] is True

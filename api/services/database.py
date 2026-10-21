@@ -75,7 +75,7 @@ def get_app_version() -> str:
 
 from api.models.config import ConfigItem, ConfigValueType
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
-from api.models.item import Item, ItemFlag, ItemStatus, ItemUpdate
+from api.models.item import Item, ItemFlag, ItemUpdate
 from api.models.job import Job, JobCreate, JobOutputs, JobPhase, JobStatus, JobUpdate, PhaseStatus
 
 
@@ -207,35 +207,57 @@ screengrab_attachments_table = Table(
     Column("error_message", Text, nullable=True),
 )
 
-# Define job_items table (migration 023) — the editor-facing primitive (#329).
+# Define job_items table (migration 023) — one output of one job (#426).
 # Items are authoritative once extracted; the *_output.md phase documents stay
-# on disk as frozen provenance and are never rewritten by an edit or approval.
+# on disk as frozen provenance and are never rewritten by an edit or a review.
 job_items_table = Table(
     "job_items",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("job_id", Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False),
     Column("key", Text, nullable=False),
-    Column("layer", Text, nullable=False),  # context | deliverable
-    Column("category", Text, nullable=False),  # context | metadata | copy | transcript
-    Column("source", Text, nullable=False),  # llm | deterministic | human
-    Column("proposed_value", Text, nullable=True),
-    Column("current_value", Text, nullable=True),
+    Column("category", Text, nullable=False),  # metadata | copy | transcript
+    Column("origin", Text, nullable=False),  # deterministic | inferred
+    Column("generation_state", Text, nullable=False, server_default="ready"),  # ready | failed | unavailable
+    Column("generation_reason", Text, nullable=True),
+    Column("review_state", Text, nullable=False, server_default="proposed"),  # proposed | accepted | dismissed
+    Column("basis_value", Text, nullable=True),
+    Column("basis_fetched_at", DateTime, nullable=True),
     Column("current_state", Text, nullable=False, server_default="unknown"),
-    Column("current_fetched_at", DateTime, nullable=True),
-    Column("status", Text, nullable=False, server_default="pending_review"),
-    Column("source_blocked_on", Text, nullable=True),
+    Column("proposed_value", Text, nullable=True),
+    Column("edited_value", Text, nullable=True),
+    Column("rationale", Text, nullable=True),
     Column("flags", Text, nullable=True),  # JSON array of ItemFlag
-    Column("kickback_note", Text, nullable=True),
-    Column("kicked_back_at", DateTime, nullable=True),
-    Column("phase", Text, nullable=True),
-    Column("model", Text, nullable=True),
     Column("char_limit", Integer, nullable=True),
-    Column("airtable_field", Text, nullable=True),
-    Column("airtable_field_id", Text, nullable=True),
+    Column("generator", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("input_tokens", Integer, nullable=True),
+    Column("output_tokens", Integer, nullable=True),
+    Column("cost_usd", Float, nullable=True),
+    Column("generated_at", DateTime, nullable=True),
     Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
     Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
     UniqueConstraint("job_id", "key", name="uq_job_items_job_key"),
+)
+
+# Define item_pushes table (migration 023) — an item's state on one target.
+# Empty until the push endpoint exists (#428).
+item_pushes_table = Table(
+    "item_pushes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("item_id", Integer, ForeignKey("job_items.id", ondelete="CASCADE"), nullable=False),
+    Column("target", Text, nullable=False),  # 'airtable'
+    Column("target_record_id", Text, nullable=True),
+    Column("target_field_id", Text, nullable=True),
+    Column("state", Text, nullable=False, server_default="not_pushed"),
+    Column("pushed_value", Text, nullable=True),
+    Column("pushed_at", DateTime, nullable=True),
+    Column("pushed_by", Text, nullable=True),
+    Column("error", Text, nullable=True),
+    Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    UniqueConstraint("item_id", "target", name="uq_item_pushes_item_target"),
 )
 
 
@@ -1525,24 +1547,26 @@ async def list_config() -> List[ConfigItem]:
 
 
 # ============================================================================
-# Job Items (#329)
+# Job Items (#426)
 # ============================================================================
+
+# Columns only the editor writes. Re-extraction never touches them on an
+# existing item, whatever the caller puts in the row — the guarantee lives
+# here, not in the absence of a caller that sends them.
+EDITOR_OWNED_ITEM_COLUMNS = frozenset({"review_state", "edited_value"})
 
 
 async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
     """Insert or update a job's items, keyed on (job_id, key).
 
     Regeneration updates in place — there is no per-item version history by
-    design. Airtable's own revision tracking covers published values, and
+    design. AirTable's own revision tracking covers published values, and
     worker.py archives superseded phase output as
-    ``{phase}_output.{timestamp}.prev.md``, so earlier proposals survive on
-    disk.
+    ``{phase}_output.{timestamp}.prev.md``.
 
-    Editor-owned columns are preserved across re-extraction: an item the
-    editor already approved or kicked back keeps its ``status``,
-    ``kickback_note`` and ``kicked_back_at`` rather than being reset by a
-    later phase run. Callers that want a reset should clear those fields
-    explicitly.
+    Editor-owned columns (``EDITOR_OWNED_ITEM_COLUMNS``) are written on insert
+    only. An existing item keeps its review state and hand edit through any
+    number of re-extractions.
 
     Returns the number of rows written.
     """
@@ -1553,10 +1577,8 @@ async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
     written = 0
 
     async with get_session() as session:
-        existing_result = await session.execute(
-            select(job_items_table.c.key, job_items_table.c.status).where(job_items_table.c.job_id == job_id)
-        )
-        existing = {row.key: row.status for row in existing_result.fetchall()}
+        existing_result = await session.execute(select(job_items_table.c.key).where(job_items_table.c.job_id == job_id))
+        existing = {row.key for row in existing_result.fetchall()}
 
         for row in rows:
             payload = dict(row)
@@ -1565,13 +1587,12 @@ async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
 
             flags = payload.get("flags")
             if isinstance(flags, list):
-                payload["flags"] = json.dumps(flags)
+                payload["flags"] = json.dumps(flags) if flags else None
 
             key = payload["key"]
             if key in existing:
-                # Never clobber a verdict the editor already gave.
-                if existing[key] in (ItemStatus.approved.value, ItemStatus.kicked_back.value):
-                    payload.pop("status", None)
+                for column in EDITOR_OWNED_ITEM_COLUMNS:
+                    payload.pop(column, None)
                 stmt = (
                     update(job_items_table)
                     .where(
@@ -1623,25 +1644,19 @@ async def get_job_item(job_id: int, key: str) -> Optional[Item]:
 
 
 async def update_job_item(job_id: int, key: str, item_update: ItemUpdate) -> Optional[Item]:
-    """Apply an editor action to one item.
+    """Apply an editor action to one item: a hand edit and/or a review verdict.
 
-    An in-place value edit re-sources the item to ``human``. Setting
-    ``kicked_back`` stamps ``kicked_back_at``; regeneration is a separate
-    action that re-runs each affected phase once with all of its notes.
+    Only fields the caller actually sent are applied, so ``edited_value: null``
+    clears an edit while omitting it leaves the edit alone. Origin is never
+    touched — a hand-edited inferred item stays inferred.
     """
+    sent = item_update.model_fields_set
     values: dict = {}
 
-    if item_update.status is not None:
-        values["status"] = item_update.status.value
-        if item_update.status == ItemStatus.kicked_back:
-            values["kicked_back_at"] = datetime.now(timezone.utc)
-
-    if item_update.proposed_value is not None:
-        values["proposed_value"] = item_update.proposed_value
-        values["source"] = "human"
-
-    if item_update.kickback_note is not None:
-        values["kickback_note"] = item_update.kickback_note
+    if "edited_value" in sent:
+        values["edited_value"] = item_update.edited_value
+    if "review_state" in sent and item_update.review_state is not None:
+        values["review_state"] = item_update.review_state.value
 
     if not values:
         return await get_job_item(job_id, key)
@@ -1680,31 +1695,34 @@ def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
             # flags are advisory and never gate anything.
             flags = []
 
-    proposed = row.proposed_value
-    if not include_values and proposed is not None and len(proposed) > large:
-        proposed = None
+    def _maybe(value: Optional[str]) -> Optional[str]:
+        if not include_values and value is not None and len(value) > large:
+            return None
+        return value
 
     return Item(
         id=row.id,
         job_id=row.job_id,
         key=row.key,
-        layer=row.layer,
         category=row.category,
-        source=row.source,
-        proposed_value=proposed,
-        current_value=row.current_value,
+        origin=row.origin,
+        generation_state=row.generation_state,
+        generation_reason=row.generation_reason,
+        review_state=row.review_state,
+        basis_value=_maybe(row.basis_value),
+        basis_fetched_at=row.basis_fetched_at,
         current_state=row.current_state,
-        current_fetched_at=row.current_fetched_at,
-        status=row.status,
-        source_blocked_on=row.source_blocked_on,
+        proposed_value=_maybe(row.proposed_value),
+        edited_value=_maybe(row.edited_value),
+        rationale=row.rationale,
         flags=flags,
-        kickback_note=row.kickback_note,
-        kicked_back_at=row.kicked_back_at,
-        phase=row.phase,
-        model=row.model,
         char_limit=row.char_limit,
-        airtable_field=row.airtable_field,
-        airtable_field_id=row.airtable_field_id,
+        generator=row.generator,
+        model=row.model,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        cost_usd=row.cost_usd,
+        generated_at=row.generated_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

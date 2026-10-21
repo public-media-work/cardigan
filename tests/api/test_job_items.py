@@ -1,4 +1,4 @@
-"""Persistence and API tests for job items (#329)."""
+"""Persistence and API tests for job items (#426)."""
 
 import os
 import tempfile
@@ -6,7 +6,7 @@ import tempfile
 import pytest
 import pytest_asyncio
 
-from api.models.item import ItemStatus, ItemUpdate
+from api.models.item import ItemUpdate, Origin, ReviewState
 from api.models.job import JobCreate
 from api.services.database import (
     close_db,
@@ -19,7 +19,8 @@ from api.services.database import (
     update_job_item,
     upsert_job_items,
 )
-from api.services.items import ITEM_SPECS, LARGE_VALUE_CHARS, build_items
+from api.services.items import ITEM_SPECS, LARGE_VALUE_CHARS, SPECS_BY_KEY, SST_FIELD_IDS, build_items
+from api.services.legacy_item_adapter import extract_legacy_proposals
 
 
 @pytest_asyncio.fixture
@@ -80,24 +81,28 @@ Zac Schultz breaks down the collapsed surplus negotiation.
 """
 
 
+def rows_for(job_id, seo_md=SEO_MD, formatter_md="", sst_context=None):
+    proposals = extract_legacy_proposals(seo_md=seo_md, formatter_md=formatter_md)
+    return build_items(job_id=job_id, proposals=proposals, sst_context=sst_context)
+
+
 @pytest.mark.asyncio
 async def test_upsert_then_read_back(job):
-    rows = build_items(job_id=job.id, seo_md=SEO_MD)
-
-    written = await upsert_job_items(job.id, rows)
+    written = await upsert_job_items(job.id, rows_for(job.id))
     items = await get_job_items(job.id)
 
     assert written == len(ITEM_SPECS)
     assert len(items) == len(ITEM_SPECS)
     title = next(item for item in items if item.key == "title")
     assert title.proposed_value.startswith("Polling the failed surplus deal")
-    assert title.airtable_field == "Release Title"
+    assert title.origin == Origin.inferred
+    assert title.review_state == ReviewState.proposed
     assert title.char_limit == 80
 
 
 @pytest.mark.asyncio
 async def test_items_are_returned_in_registry_order(job):
-    await upsert_job_items(job.id, build_items(job_id=job.id, seo_md=SEO_MD))
+    await upsert_job_items(job.id, rows_for(job.id))
 
     keys = [item.key for item in await get_job_items(job.id)]
 
@@ -106,7 +111,7 @@ async def test_items_are_returned_in_registry_order(job):
 
 @pytest.mark.asyncio
 async def test_upsert_is_idempotent(job):
-    rows = build_items(job_id=job.id, seo_md=SEO_MD)
+    rows = rows_for(job.id)
 
     await upsert_job_items(job.id, rows)
     await upsert_job_items(job.id, rows)
@@ -115,49 +120,95 @@ async def test_upsert_is_idempotent(job):
 
 
 @pytest.mark.asyncio
-async def test_reextraction_preserves_an_editor_verdict(job):
-    """A phase retry must not silently un-approve work the editor signed off."""
-    await upsert_job_items(job.id, build_items(job_id=job.id, seo_md=SEO_MD))
-    await update_job_item(job.id, "title", ItemUpdate(status=ItemStatus.approved))
+async def test_reextraction_preserves_the_editors_columns(job):
+    """A phase retry must not undo a verdict or discard a hand edit."""
+    await upsert_job_items(job.id, rows_for(job.id))
+    await update_job_item(
+        job.id,
+        "title",
+        ItemUpdate(review_state=ReviewState.accepted, edited_value="The editor's title"),
+    )
 
-    # A later phase run proposes something new for the same key.
-    revised = build_items(job_id=job.id, seo_md=SEO_MD.replace("Polling", "Revised"))
-    await upsert_job_items(job.id, revised)
+    await upsert_job_items(job.id, rows_for(job.id, seo_md=SEO_MD.replace("Polling", "Revised")))
 
     title = await get_job_item(job.id, "title")
-    assert title.status == ItemStatus.approved
+    assert title.review_state == ReviewState.accepted
+    assert title.edited_value == "The editor's title"
     assert title.proposed_value.startswith("Revised")
 
 
 @pytest.mark.asyncio
-async def test_kickback_records_note_and_timestamp(job):
-    await upsert_job_items(job.id, build_items(job_id=job.id, seo_md=SEO_MD))
-
-    item = await update_job_item(
+async def test_editor_columns_survive_rows_that_carry_them(job):
+    """The guarantee is enforced by the upsert, not by callers happening to
+    omit the columns (pr-watch Low finding on #348)."""
+    await upsert_job_items(job.id, rows_for(job.id))
+    await update_job_item(
         job.id,
         "title",
-        ItemUpdate(status=ItemStatus.kicked_back, kickback_note="too clickbaity"),
+        ItemUpdate(review_state=ReviewState.dismissed, edited_value="Kept"),
     )
 
-    assert item.status == ItemStatus.kicked_back
-    assert item.kickback_note == "too clickbaity"
-    assert item.kicked_back_at is not None
+    carrying = rows_for(job.id)
+    for row in carrying:
+        row["review_state"] = "proposed"
+        row["edited_value"] = None
+    await upsert_job_items(job.id, carrying)
+
+    title = await get_job_item(job.id, "title")
+    assert title.review_state == ReviewState.dismissed
+    assert title.edited_value == "Kept"
 
 
 @pytest.mark.asyncio
-async def test_in_place_edit_resources_the_item_to_human(job):
-    await upsert_job_items(job.id, build_items(job_id=job.id, seo_md=SEO_MD))
+async def test_hand_edit_never_changes_origin(job):
+    await upsert_job_items(job.id, rows_for(job.id))
 
-    item = await update_job_item(job.id, "title", ItemUpdate(proposed_value="A human wrote this"))
+    item = await update_job_item(job.id, "title", ItemUpdate(edited_value="A human wrote this"))
 
-    assert item.proposed_value == "A human wrote this"
-    assert item.source.value == "human"
+    assert item.edited_value == "A human wrote this"
+    assert item.proposed_value.startswith("Polling")
+    assert item.origin == Origin.inferred
+    assert item.value == "A human wrote this"
+
+
+@pytest.mark.asyncio
+async def test_null_clears_an_edit_and_omission_keeps_it(job):
+    await upsert_job_items(job.id, rows_for(job.id))
+    await update_job_item(job.id, "title", ItemUpdate(edited_value="Edit"))
+
+    kept = await update_job_item(job.id, "title", ItemUpdate(review_state=ReviewState.accepted))
+    assert kept.edited_value == "Edit"
+
+    cleared = await update_job_item(job.id, "title", ItemUpdate(edited_value=None))
+    assert cleared.edited_value is None
+    assert cleared.value == cleared.proposed_value
+
+
+@pytest.mark.asyncio
+async def test_review_state_can_be_reopened(job):
+    await upsert_job_items(job.id, rows_for(job.id))
+    await update_job_item(job.id, "title", ItemUpdate(review_state=ReviewState.dismissed))
+
+    item = await update_job_item(job.id, "title", ItemUpdate(review_state=ReviewState.proposed))
+
+    assert item.review_state == ReviewState.proposed
+
+
+@pytest.mark.asyncio
+async def test_unavailable_items_take_a_hand_edit(job):
+    """Copy generation off still leaves the editor somewhere to write."""
+    await upsert_job_items(job.id, rows_for(job.id))
+
+    item = await update_job_item(job.id, "keywords", ItemUpdate(edited_value="politics, budget"))
+
+    assert item.generation_state.value == "unavailable"
+    assert item.value == "politics, budget"
 
 
 @pytest.mark.asyncio
 async def test_large_values_are_omitted_unless_requested(job):
     body = "x" * (LARGE_VALUE_CHARS + 1)
-    await upsert_job_items(job.id, build_items(job_id=job.id, formatter_md=body))
+    await upsert_job_items(job.id, rows_for(job.id, formatter_md=body))
 
     omitted = await get_job_items(job.id, include_values=False)
     hydrated = await get_job_items(job.id, include_values=True)
@@ -167,17 +218,31 @@ async def test_large_values_are_omitted_unless_requested(job):
     assert transcript_omitted.proposed_value is None
     assert transcript_full.proposed_value == body
     # Small values survive the omission pass.
-    assert next(i for i in omitted if i.key == "title") is not None
+    assert next(i for i in omitted if i.key == "title").proposed_value is not None
+
+
+@pytest.mark.asyncio
+async def test_basis_round_trips(job):
+    context = {field_id: None for field_id in SST_FIELD_IDS}
+    context[SPECS_BY_KEY["short_description"].sst_field_id] = "Existing copy."
+    context["record_id"] = "recTEST"
+
+    await upsert_job_items(job.id, rows_for(job.id, sst_context=context))
+
+    item = await get_job_item(job.id, "short_description")
+    assert item.basis_value == "Existing copy."
+    assert item.is_suggestion()
+    assert item.basis_fetched_at is not None
 
 
 @pytest.mark.asyncio
 async def test_update_unknown_item_returns_none(job):
-    assert await update_job_item(job.id, "nope", ItemUpdate(status=ItemStatus.approved)) is None
+    assert await update_job_item(job.id, "nope", ItemUpdate(review_state=ReviewState.accepted)) is None
 
 
 @pytest.mark.asyncio
 async def test_delete_job_items(job):
-    await upsert_job_items(job.id, build_items(job_id=job.id, seo_md=SEO_MD))
+    await upsert_job_items(job.id, rows_for(job.id))
 
     removed = await delete_job_items(job.id)
 
@@ -190,12 +255,26 @@ async def test_items_are_scoped_to_their_job(test_db):
     job_a = await create_job(JobCreate(project_name="a", transcript_file="a.txt"))
     job_b = await create_job(JobCreate(project_name="b", transcript_file="b.txt"))
 
-    await upsert_job_items(job_a.id, build_items(job_id=job_a.id, seo_md=SEO_MD))
+    await upsert_job_items(job_a.id, rows_for(job_a.id))
 
     assert len(await get_job_items(job_a.id)) == len(ITEM_SPECS)
     assert await get_job_items(job_b.id) == []
 
     await delete_job(job_b.id)
+
+
+@pytest.mark.asyncio
+async def test_item_pushes_table_exists_and_starts_empty(job):
+    """The push record exists in the schema; nothing writes it yet (#428)."""
+    from sqlalchemy import func, select
+
+    from api.services.database import get_session, item_pushes_table
+
+    await upsert_job_items(job.id, rows_for(job.id))
+
+    async with get_session() as session:
+        count = (await session.execute(select(func.count()).select_from(item_pushes_table))).scalar()
+    assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -205,12 +284,12 @@ async def test_items_are_scoped_to_their_job(test_db):
 
 @pytest.mark.asyncio
 async def test_endpoints_round_trip(job):
-    """GET the list, GET one, PATCH a verdict — over real HTTP."""
+    """GET the list, GET one, PATCH an edit and a verdict — over real HTTP."""
     from fastapi.testclient import TestClient
 
     from api.main import app
 
-    await upsert_job_items(job.id, build_items(job_id=job.id, seo_md=SEO_MD))
+    await upsert_job_items(job.id, rows_for(job.id))
 
     with TestClient(app) as client:
         listed = client.get(f"/api/jobs/{job.id}/items")
@@ -219,11 +298,9 @@ async def test_endpoints_round_trip(job):
         assert payload["total"] == len(ITEM_SPECS)
         assert payload["job_id"] == job.id
         assert payload["values_included"] is False
-        # 9 specs are blocked on an integration or on structured output, and
-        # with no SST context the 4 deterministic dates have no Digital
-        # Premiere to derive from, so they wait too.
-        blocked_specs = sum(1 for spec in ITEM_SPECS if spec.is_blocked)
-        assert payload["summary"]["by_status"]["awaiting_source"] == blocked_specs + 4
+        assert payload["summary"]["by_generation_state"]["ready"] == 2  # title, short
+        # The fixture has no long description section: a failure, not an absence.
+        assert payload["summary"]["by_generation_state"]["failed"] == 1
         # Nothing was fetched, so every item is honestly 'unknown'.
         assert all(item["current_state"] == "unknown" for item in payload["items"])
 
@@ -233,19 +310,49 @@ async def test_endpoints_round_trip(job):
 
         patched = client.patch(
             f"/api/jobs/{job.id}/items/title",
-            json={"status": "approved"},
+            json={"edited_value": "Hand-written", "review_state": "accepted"},
         )
         assert patched.status_code == 200
-        assert patched.json()["status"] == "approved"
+        assert patched.json()["review_state"] == "accepted"
+        assert patched.json()["edited_value"] == "Hand-written"
+        assert patched.json()["origin"] == "inferred"
 
-        filtered = client.get(f"/api/jobs/{job.id}/items", params={"category": "context"})
-        assert filtered.status_code == 200
-        assert {item["key"] for item in filtered.json()["items"]} == {
-            "context.themes",
-            "context.speakers",
-            "context.place_names",
-            "context.editorial_angles",
+        accepted = client.get(f"/api/jobs/{job.id}/items", params={"review_state": "accepted"})
+        assert [item["key"] for item in accepted.json()["items"]] == ["title"]
+        assert accepted.json()["summary"]["edited"] == 1
+
+        deterministic = client.get(f"/api/jobs/{job.id}/items", params={"origin": "deterministic"})
+        assert {item["key"] for item in deterministic.json()["items"]} == {
+            spec.key for spec in ITEM_SPECS if spec.origin == Origin.deterministic
         }
+
+        ready = client.get(f"/api/jobs/{job.id}/items", params={"generation_state": "ready"})
+        assert {item["key"] for item in ready.json()["items"]} == {"title", "short_description"}
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_system_fields(job):
+    """Origin, basis, generation state and provenance are not the editor's."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    await upsert_job_items(job.id, rows_for(job.id))
+
+    with TestClient(app) as client:
+        for body in (
+            {"origin": "deterministic"},
+            {"proposed_value": "sneaky"},
+            {"basis_value": "x"},
+            {"generation_state": "ready"},
+            {"edited_value": "ok", "model": "x"},
+        ):
+            response = client.patch(f"/api/jobs/{job.id}/items/title", json=body)
+            assert response.status_code == 422, body
+
+        title = client.get(f"/api/jobs/{job.id}/items/title").json()
+        assert title["origin"] == "inferred"
+        assert title["edited_value"] is None
 
 
 @pytest.mark.asyncio
@@ -257,4 +364,4 @@ async def test_endpoints_404_cleanly(job):
     with TestClient(app) as client:
         assert client.get("/api/jobs/999999/items").status_code == 404
         assert client.get(f"/api/jobs/{job.id}/items/nope").status_code == 404
-        assert client.patch(f"/api/jobs/{job.id}/items/nope", json={"status": "approved"}).status_code == 404
+        assert client.patch(f"/api/jobs/{job.id}/items/nope", json={"review_state": "accepted"}).status_code == 404

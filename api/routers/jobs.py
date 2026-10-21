@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
-from api.models.item import Item, ItemCategory, ItemList, ItemStatus, ItemUpdate
+from api.models.item import GenerationState, Item, ItemCategory, ItemList, ItemUpdate, Origin, ReviewState
 from api.models.job import Job, JobStatus, JobUpdate, PhaseStatus
 from api.services.airtable import AirtableClient
 from api.services.database import (
@@ -897,8 +897,16 @@ async def retry_phase(
 
 
 # ============================================================================
-# Items (#329)
+# Items (#426)
 # ============================================================================
+
+
+def _count(items: list, attr: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        value = getattr(item, attr).value
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 @router.get("/{job_id}/items", response_model=ItemList)
@@ -909,17 +917,15 @@ async def list_job_items(
         description="Pass 'values' to hydrate large values (the formatted transcript is 50-150KB)",
     ),
     category: Optional[ItemCategory] = Query(None, description="Filter to one category"),
-    status: Optional[ItemStatus] = Query(None, description="Filter to one review status"),
+    origin: Optional[Origin] = Query(None, description="Filter to deterministic or inferred"),
+    review_state: Optional[ReviewState] = Query(None, description="Filter to one review state"),
+    generation_state: Optional[GenerationState] = Query(None, description="Filter to one generation state"),
 ):
-    """List a job's items — the editor-facing view of its output.
-
-    Items replace the agent-shaped ``*_output.md`` documents as the unit an
-    editor reviews. Each carries a proposed value, the current Airtable value
-    it would replace, and a status.
+    """List a job's items — every output of the job, each labelled
+    deterministic or inferred.
 
     Large values are omitted by default; pass ``?include=values`` to hydrate
-    them. Nothing in this response blocks: flags are advisory, and an item
-    carrying errors is still approvable.
+    them. Nothing in this response blocks: flags are advisory.
     """
     job = await get_job(job_id)
     if job is None:
@@ -930,14 +936,12 @@ async def list_job_items(
 
     if category is not None:
         items = [item for item in items if item.category == category]
-    if status is not None:
-        items = [item for item in items if item.status == status]
-
-    by_status: dict[str, int] = {}
-    by_category: dict[str, int] = {}
-    for item in items:
-        by_status[item.status.value] = by_status.get(item.status.value, 0) + 1
-        by_category[item.category.value] = by_category.get(item.category.value, 0) + 1
+    if origin is not None:
+        items = [item for item in items if item.origin == origin]
+    if review_state is not None:
+        items = [item for item in items if item.review_state == review_state]
+    if generation_state is not None:
+        items = [item for item in items if item.generation_state == generation_state]
 
     return ItemList(
         items=items,
@@ -945,9 +949,11 @@ async def list_job_items(
         job_id=job_id,
         values_included=include_values,
         summary={
-            "by_status": by_status,
-            "by_category": by_category,
-            "needs_confirmation": sum(1 for item in items if item.needs_overwrite_confirmation()),
+            "by_origin": _count(items, "origin"),
+            "by_review_state": _count(items, "review_state"),
+            "by_generation_state": _count(items, "generation_state"),
+            "by_category": _count(items, "category"),
+            "edited": sum(1 for item in items if item.edited_value is not None),
             "flagged": sum(1 for item in items if item.has_errors()),
         },
     )
@@ -955,7 +961,7 @@ async def list_job_items(
 
 @router.get("/{job_id}/items/{key}", response_model=Item)
 async def get_single_job_item(job_id: int, key: str):
-    """Retrieve one item by key, always with its full value."""
+    """Retrieve one item by key, always with its full values."""
     item = await get_job_item(job_id, key)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Item '{key}' not found on job {job_id}")
@@ -964,12 +970,12 @@ async def get_single_job_item(job_id: int, key: str):
 
 @router.patch("/{job_id}/items/{key}", response_model=Item)
 async def patch_job_item(job_id: int, key: str, body: ItemUpdate):
-    """Apply an editor action to one item: approve, kick back, or edit in place.
+    """Apply an editor action to one item: a hand edit and/or a review verdict.
 
-    An in-place value edit re-sources the item to ``human``. A kickback records
-    the note and stamps the time but does not regenerate anything — that is a
-    separate action which re-runs each affected phase once, carrying all of
-    that phase's notes.
+    Accepts ``edited_value`` (send null to clear) and ``review_state`` only.
+    Anything else is rejected with 422 — origin, basis, generation state and
+    provenance belong to the system. There is no push here: the REST API
+    stays read-only for SST until the push endpoint exists (#428).
     """
     item = await update_job_item(job_id, key, body)
     if item is None:
@@ -977,6 +983,11 @@ async def patch_job_item(job_id: int, key: str, body: ItemUpdate):
 
     logger.info(
         "Item updated",
-        extra={"job_id": job_id, "item_key": key, "status": item.status.value, "source": item.source.value},
+        extra={
+            "job_id": job_id,
+            "item_key": key,
+            "review_state": item.review_state.value,
+            "edited": item.edited_value is not None,
+        },
     )
     return item
