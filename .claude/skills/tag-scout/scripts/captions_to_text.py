@@ -38,7 +38,7 @@ from typing import Optional
 # EIA-608 character tables
 # ---------------------------------------------------------------------------
 
-# The basic set is ASCII 0x20-0x7F with nine substitutions. Getting these wrong
+# The basic set is ASCII 0x20-0x7F with ten substitutions. Getting these wrong
 # is silent: you get '}' where the caption said 'N-tilde'.
 _BASIC_OVERRIDES = {
     0x2A: "á",
@@ -88,7 +88,7 @@ _EXT_SPANISH_FRENCH = {
     0x2A: "─",
     0x2B: "©",
     0x2C: "℠",
-    0x2D: "·",
+    0x2D: "•",
     0x2E: "“",
     0x2F: "”",
     0x30: "À",
