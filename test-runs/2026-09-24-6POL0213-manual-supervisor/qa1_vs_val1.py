@@ -11,6 +11,9 @@ prod's classify_qa_failure under three variants and report escalate-vs-pause:
 If FORMATTER_URL_TEMPLATE is given (e.g. "http://cardigan01:8100/api/jobs/{id}/outputs/formatter_output.md"),
 the formatter artifact is fetched so the FORMATTER_CONTRACT_MARKERS half of the classifier runs too;
 otherwise that half is skipped and reported as such.
+
+  D  set MARKERS_NEEDS_REVIEW_ONLY=1 (with FORMATTER_URL_TEMPLATE) to count only a
+     `Status: needs_review` line as an artifact marker, ignoring review-notes block presence
 """
 
 import json
@@ -48,6 +51,26 @@ class _Curl:
 
 HTTP = _Curl()
 
+
+def get_json(url):
+    r = HTTP.get(url)
+    if r.status_code != 200:
+        sys.exit(f"GET {url}: HTTP {r.status_code}")
+    return r.json()
+
+
+def list_jobs(base, status=None):
+    """Every job in the queue. The endpoint pages at 100 max and has no `limit`."""
+    jobs, page = [], 1
+    while True:
+        url = f"{base}/api/queue/?page={page}&page_size=100" + (f"&status={status}" if status else "")
+        body = get_json(url)
+        jobs += body["jobs"]
+        if page >= body["total_pages"]:
+            return jobs
+        page += 1
+
+
 # The checkout whose escalation.py is under test. The FINDINGS numbers were produced with
 # prod's revision (e142891) checked out; to reproduce them, point CARDIGAN_REPO at a worktree
 # on that commit. Defaults to the repo this file lives in.
@@ -58,9 +81,7 @@ from api.services import escalation as esc  # noqa: E402
 BASE = os.environ.get("CARDIGAN_API_URL", "http://cardigan01:8100")
 FMT_TPL = os.environ.get("FORMATTER_URL_TEMPLATE")
 
-jobs = HTTP.get(f"{BASE}/api/queue/?limit=200").json()
-jobs = jobs if isinstance(jobs, list) else jobs.get("jobs") or jobs.get("items")
-paused = [j for j in jobs if j.get("status") == "paused"]
+paused = list_jobs(BASE, status="paused")
 
 ORIG = list(esc.NONFIXABLE_FLAG_PATTERNS)
 if os.environ.get("MARKERS_NEEDS_REVIEW_ONLY"):
@@ -93,7 +114,7 @@ def strip_val1(vr):
 
 rows = []
 for j in paused:
-    d = HTTP.get(f"{BASE}/api/jobs/{j['id']}").json()
+    d = get_json(f"{BASE}/api/jobs/{j['id']}")
     vr = d.get("validation_result")
     err = (d.get("error_message") or "")[:70]
     if not vr:

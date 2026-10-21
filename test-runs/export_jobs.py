@@ -11,7 +11,7 @@ Source transcripts are NOT exported: the API does not serve them (outputs allowl
 index records transcript_file so they can be pulled from the box or mmingest later.
 
 Usage:
-  python test-runs/export_jobs.py --out test-runs/archive/2026-09-24-all-jobs
+  python test-runs/export_jobs.py --out ../internal-production-data/cardigan/2026-09-24-all-jobs
   python test-runs/export_jobs.py --status paused failed --out ...
   CARDIGAN_API_URL=http://cardigan01:8100 (default)
   CARDIGAN_API_KEY=...  sent as X-API-Key when set
@@ -43,6 +43,24 @@ def get(url: str) -> tuple[int, str]:
     return int(code or 0), body
 
 
+def list_jobs(statuses: list[str] | None) -> list[dict]:
+    """Every job (optionally per status). The endpoint pages at 100 max and has no `limit`."""
+    jobs = []
+    for status in statuses or [None]:
+        page = 1
+        while True:
+            url = f"{BASE}/api/queue/?page={page}&page_size=100" + (f"&status={status}" if status else "")
+            code, body = get(url)
+            if code != 200:
+                raise SystemExit(f"queue list failed: HTTP {code} ({url})")
+            data = json.loads(body)
+            jobs += data["jobs"]
+            if page >= data["total_pages"]:
+                break
+            page += 1
+    return jobs
+
+
 def _first_line_mentions(path: Path, word: str) -> bool:
     if not path.exists():
         return False
@@ -58,14 +76,7 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    code, body = get(f"{BASE}/api/queue/?limit=500")
-    if code != 200:
-        print(f"queue list failed: HTTP {code}", file=sys.stderr)
-        return 1
-    jobs = json.loads(body)
-    jobs = jobs if isinstance(jobs, list) else jobs.get("jobs") or jobs.get("items")
-    if args.status:
-        jobs = [j for j in jobs if j.get("status") in set(args.status)]
+    jobs = list_jobs(args.status)
     jobs.sort(key=lambda j: j["id"])
 
     index = []
@@ -93,7 +104,8 @@ def main() -> int:
             "copy_editor_output.md",
         ] + [v for v in (d.get("outputs") or {}).values() if v]
         saved = []
-        for fn in dict.fromkeys(files):
+        # Manifest names come from the server; keep only the basename so none can escape jdir.
+        for fn in dict.fromkeys(Path(f).name for f in files):
             code, body = get(f"{BASE}/api/jobs/{jid}/outputs/{fn}")
             if code == 200:
                 (jdir / fn).write_text(body, encoding="utf-8")
