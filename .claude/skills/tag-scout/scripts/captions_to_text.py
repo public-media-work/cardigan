@@ -261,9 +261,12 @@ def decode_scc(content: str) -> list[Caption]:
                     buffer.append(_SPECIAL_NA[b2])
                 elif b1 in (0x12, 0x13) and 0x20 <= b2 <= 0x3F:
                     # Extended chars arrive *after* a basic-set approximation
-                    # that the decoder is required to discard.
+                    # that the decoder is required to discard. Drop only that
+                    # one character: a byte pair can put real text beside it.
                     if buffer:
-                        buffer.pop()
+                        buffer[-1] = buffer[-1][:-1]
+                        if not buffer[-1]:
+                            buffer.pop()
                     if pending_start is None:
                         pending_start = line_ms
                     table = _EXT_SPANISH_FRENCH if b1 == 0x12 else _EXT_PORTUGUESE_GERMAN

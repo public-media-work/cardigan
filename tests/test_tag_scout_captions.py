@@ -100,6 +100,11 @@ class TestDecodeSCC:
         scc = "Scenarist_SCC V1.0\n\n00:00:01;00\t9420 9420 9470 9470 2055 9224 9224 942f 942f\n"
         assert cts.decode_scc(scc)[0].text == "Ü"
 
+    def test_extended_char_keeps_real_char_sharing_the_fallback_pair(self):
+        # "AU" arrives in one byte pair; only the 'U' fallback is discarded.
+        scc = "Scenarist_SCC V1.0\n\n00:00:01;00\t9420 9420 9470 9470 c1d5 9224 9224 942f 942f\n"
+        assert cts.decode_scc(scc)[0].text == "AÜ"
+
     def test_channel_two_control_codes_are_ignored(self):
         # 0x1F-range pairs are CC2; we only decode CC1.
         scc = "Scenarist_SCC V1.0\n\n" "00:00:01;00\t9420 9420 9470 9470 c1c2 1f20 1f20 942f 942f\n"
