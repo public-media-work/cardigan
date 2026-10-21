@@ -116,8 +116,18 @@ Transcript: <link>
 
 - **Both markers present** → replace only what lies between them.
 - **Markers absent** → append the block after existing content, separated by one blank line.
+- **Exactly one marker present** (a human deleted the other) → refuse and surface it for a
+  human. Appending would leave an orphaned or duplicate block.
 - **Never** replace the field wholesale, and never write it from a value the client
   merely read earlier — a stale read-modify-write loses whatever a human typed in between.
+  AirTable has no compare-and-swap, so "fresh" means the `commit_sst_edits` mechanism:
+  re-fetch immediately before the PATCH and abort if the field changed since the
+  proposal. That narrows the race window; it does not close it.
+- **Verify the round trip.** `richText` is markdown-flavoured: a `---` line can render as a
+  rule or a setext underline, and AirTable may re-escape or re-wrap lines. The first
+  implementation must write a block, read it back, and confirm the markers survive
+  byte-for-byte. Marker matching should tolerate whitespace and escaping changes rather
+  than assume an exact string.
 
 **One writer, not two.** The transcript link and the chapters have independent
 producers — `formatter` (required) and `timestamp` (optional, 10-minute threshold) —
@@ -139,14 +149,24 @@ HTML comments, because AirTable `richText` renders comments literally.
 
 `Platform Notes` as a home for automation stamps is **provisional**. pbswi issue
 [#142](https://github.com/public-media-work/pbswi/issues/142) — *"Confirm with Lisa:
-OK to use SST 'Platform Notes' for automation metadata stamps?"* — has been **open and
-untouched since 2026-07-02**. `AIRTABLE_SAFETY.md` §3a is explicit that the field
+OK to use SST 'Platform Notes' for automation metadata stamps?"* — was **open and
+untouched from 2026-07-02** when this audit was taken (2026-08-28). **Update 2026-10-21:**
+on 2026-09-01 the field question was answered there (`Platform Notes` is a Digital Team
+field, already used for automation timestamps and chapter lists). #142 stays open pending
+the wider AirTable write-posture conversation with the base owner, tracked with the
+conditions on Cardigan's SST write path in
+[pbswi-ops#9](https://github.com/public-media-work/pbswi-ops/issues/9). `AIRTABLE_SAFETY.md` §3a is explicit that the field
 choice is *"pending the base owner's (Lisa's) confirmation … the reason the original
 `Notes` field was renamed to `Promo Notes` is unknown."*
 
 So Cardigan writing here would be a **second** automation on a field whose automation
 use the base owner has not yet blessed. The format above is ready; shipping it should
 wait on #142, or ride along with it.
+
+**Not an authorization.** `target_identified_pending_authorization` in
+`config/sst_field_map.json` means the field is identified, nothing more. `Platform Notes`
+is not in `WRITABLE_FIELDS`, and adding it is a separate, gated change to the
+`propose → review → commit` allowlist that needs explicit approval.
 
 ## G4 — Question 4, stated directly
 
