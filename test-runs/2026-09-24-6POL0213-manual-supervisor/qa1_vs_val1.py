@@ -63,7 +63,7 @@ def list_jobs(base, status=None):
     """Every job in the queue. The endpoint pages at 100 max and has no `limit`."""
     jobs, page = [], 1
     while True:
-        url = f"{base}/api/queue/?page={page}&page_size=100" + (f"&status={status}" if status else "")
+        url = f"{base}/api/queue/?page={page}&page_size=100&sort=oldest" + (f"&status={status}" if status else "")
         body = get_json(url)
         jobs += body["jobs"]
         if page >= body["total_pages"]:

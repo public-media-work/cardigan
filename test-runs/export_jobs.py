@@ -49,7 +49,7 @@ def list_jobs(statuses: list[str] | None) -> list[dict]:
     for status in statuses or [None]:
         page = 1
         while True:
-            url = f"{BASE}/api/queue/?page={page}&page_size=100" + (f"&status={status}" if status else "")
+            url = f"{BASE}/api/queue/?page={page}&page_size=100&sort=oldest" + (f"&status={status}" if status else "")
             code, body = get(url)
             if code != 200:
                 raise SystemExit(f"queue list failed: HTTP {code} ({url})")
