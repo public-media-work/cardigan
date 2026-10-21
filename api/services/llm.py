@@ -50,6 +50,10 @@ MALFORMED_BODY_BACKOFF_S = (1.0, 3.0)
 # multi-megabyte body cannot flood the logs.
 MALFORMED_BODY_PREFIX_CHARS = 300
 
+# Default completion cap when neither the caller nor the backend config sets one.
+# Matches the OpenAI-compatible path's long-standing default.
+DEFAULT_MAX_TOKENS = 4096
+
 
 class CostCapExceededError(Exception):
     """Raised when a request would exceed the run cost cap."""
@@ -135,6 +139,67 @@ class CreditExhaustedError(Exception):
         super().__init__(detail)
         self.detail = detail
         self.backend = backend
+
+
+class OutputTruncatedError(Exception):
+    """The provider stopped generation early (``finish_reason == "length"``).
+
+    The completion is cut off mid-output but is otherwise a well-formed 200
+    response, so it would pass as a successful phase. Raising here fails the
+    phase loudly instead of handing a half-written transcript downstream,
+    where only the coverage ratio stood a chance of catching it (#403).
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        backend: Optional[str] = None,
+        output_tokens: int = 0,
+        cost: float = 0.0,
+    ):
+        super().__init__(detail)
+        self.detail = detail
+        self.backend = backend
+        self.output_tokens = output_tokens
+        # The provider billed for the tokens it generated before cutting us off.
+        # The caller must still book this: chat() only reaches tracker.add_call()
+        # on a successful return, so without carrying it here the spend silently
+        # escapes the run cost cap.
+        self.cost = cost
+
+
+class ModelRefusalError(OutputTruncatedError):
+    """The model's safety classifier declined the request (``stop_reason == "refusal"``).
+
+    Claude 5.x and Fable models carry streaming classifiers that answer with a
+    normal 200 whose content is empty or partial. It is not a length stop and
+    not reasoning eating the cap, so the truncation remedy ("raise max_tokens")
+    would be wrong. Subclasses ``OutputTruncatedError`` so every existing route
+    (pause instead of fail, booking the billed spend, optional phases, chunks)
+    applies unchanged; the worker only words the pause differently.
+
+    ``category`` is Anthropic's ``stop_details.category`` when the provider
+    passes it through (e.g. ``reasoning_extraction``, ``cyber``), else None.
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        backend: Optional[str] = None,
+        output_tokens: int = 0,
+        cost: float = 0.0,
+        category: Optional[str] = None,
+    ):
+        super().__init__(detail, backend=backend, output_tokens=output_tokens, cost=cost)
+        self.category = category
+
+
+def _refusal_detail(model: str, category: Optional[str], explanation: Optional[str]) -> str:
+    """One operator-facing line for a classifier refusal."""
+    detail = f"The model's safety classifier declined this request (model={model}, category={category or 'unknown'})."
+    if explanation:
+        detail += f" Provider explanation: {explanation}"
+    return detail
 
 
 def _parse_unavailable_503(response: "httpx.Response") -> tuple[str, Optional[int], bool]:
@@ -226,6 +291,10 @@ class LLMResponse:
     duration_ms: int
     backend: str
     raw_response: Optional[Dict[str, Any]] = None
+    # Tokens spent on model reasoning. Drawn from the same max_tokens budget as
+    # visible output on reasoning-by-default models, so a healthy-looking
+    # completion count can contain almost no transcript (#403).
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -255,6 +324,29 @@ class RunCostTracker:
                 "tokens": response.total_tokens,
                 "cost": response.cost,
                 "duration_ms": response.duration_ms,
+            }
+        )
+
+    def add_unusable_call(self, *, cost: float, output_tokens: int, model: str, backend: Optional[str]) -> None:
+        """Book spend for a call that was billed but produced nothing usable.
+
+        A provider length-stop or a null-content 200 never reaches ``add_call``,
+        because that only runs on a successful return — yet the tokens were
+        generated and charged. Without this the run cost cap and the paused
+        job's ``actual_cost`` both undercount every truncated call (#403 review).
+        """
+        self.total_cost += cost
+        self.total_output_tokens += output_tokens
+        self.total_tokens += output_tokens
+        self.call_count += 1
+        self.calls.append(
+            {
+                "model": model,
+                "backend": backend,
+                "tokens": output_tokens,
+                "cost": cost,
+                "duration_ms": 0,
+                "unusable": True,
             }
         )
 
@@ -723,6 +815,27 @@ class LLMClient:
                 return await self._call_gemini(backend_config, model_id, messages, api_key, **kwargs)
             raise ValueError(f"Unsupported backend type: {backend_type}")
 
+        async def _dispatch_tracked() -> LLMResponse:
+            """Dispatch, booking the spend of a billed-but-unusable completion.
+
+            ``tracker.add_call`` below only runs on a successful return, so a
+            truncated or null-content call would otherwise escape the run cost
+            cap entirely despite having been charged (#403 review).
+            """
+            try:
+                return await _dispatch()
+            except OutputTruncatedError as exc:
+                if exc.cost:
+                    tr = get_run_tracker(job_id)
+                    if tr is not None:
+                        tr.add_unusable_call(
+                            cost=exc.cost,
+                            output_tokens=exc.output_tokens,
+                            model=model_id,
+                            backend=backend_name,
+                        )
+                raise
+
         # A success status with an unparseable body is transient upstream damage.
         # Retry it here rather than let it kill the phase: there is no retry
         # anywhere above this (a chunk failure fails the whole job). Deliberately
@@ -730,7 +843,7 @@ class LLMClient:
         # their own recovery semantics and must not burn attempts here.
         for attempt in range(MALFORMED_BODY_MAX_ATTEMPTS):
             try:
-                response = await _dispatch()
+                response = await _dispatch_tracked()
                 break
             except MalformedResponseError as e:
                 if attempt == MALFORMED_BODY_MAX_ATTEMPTS - 1:
@@ -849,6 +962,10 @@ class LLMClient:
             "messages": messages,
             **kwargs,
         }
+        # Cap output explicitly. Without it OpenRouter applies its own
+        # undocumented completion cap, which silently truncated the formatter
+        # mid-transcript (#403). Precedence: explicit kwarg > backend config > 4096.
+        payload["max_tokens"] = payload.get("max_tokens") or config.get("max_tokens", DEFAULT_MAX_TOKENS)
 
         response = await self._post_openrouter(config["endpoint"], headers, payload)
 
@@ -880,6 +997,7 @@ class LLMClient:
         input_tokens = usage.get("prompt_tokens", 0)
         output_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+        reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
 
         # OpenRouter may report cost directly
         openrouter_cost = None
@@ -893,9 +1011,60 @@ class LLMClient:
         else:
             cost = calculate_cost(actual_model, input_tokens, output_tokens, openrouter_cost)
 
-        # Extract content
-        content = data["choices"][0]["message"]["content"]
-        actual_model = data.get("model", model)
+        # A length stop means the provider cut generation off mid-output. The body
+        # is a well-formed 200, so without this check it is recorded as a completed
+        # phase and only the downstream coverage ratio can catch it (#403).
+        choice = (data.get("choices") or [{}])[0]
+        finish_reason = choice.get("finish_reason")
+        content = choice.get("message", {}).get("content")
+
+        # A classifier refusal is also a 200, with empty or partial content. Check
+        # it before the length and null-content checks, which would otherwise
+        # misreport it as truncation with the wrong remedy. OpenRouter normalises
+        # finish_reason to "content_filter" and keeps the provider's own value in
+        # native_finish_reason; either one is enough.
+        if choice.get("native_finish_reason") == "refusal" or finish_reason == "content_filter":
+            details = choice.get("stop_details") or data.get("stop_details") or {}
+            if not isinstance(details, dict):
+                details = {}
+            raise ModelRefusalError(
+                _refusal_detail(actual_model, details.get("category"), details.get("explanation")),
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+                cost=cost,
+                category=details.get("category"),
+            )
+
+        if finish_reason == "length":
+            raise OutputTruncatedError(
+                f"Provider stopped generation early (finish_reason='length') after "
+                f"{output_tokens} output tokens on model={actual_model}. The output is "
+                f"truncated mid-generation; raise max_tokens or split the input.",
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+                cost=cost,
+            )
+
+        # A 200 can still carry null content when the whole completion went to
+        # reasoning. That is the same condition as a length stop — the cap was
+        # consumed and nothing usable came back — so it raises the same error.
+        #
+        # Deliberately NOT MalformedResponseError: chat() retries that up to
+        # MALFORMED_BODY_MAX_ATTEMPTS for transient body corruption, and this
+        # condition is deterministic given the same inputs. Retrying bills three
+        # identical completions and then lands in the generic failure path,
+        # which discards the "disable reasoning or raise max_tokens" remedy the
+        # operator needs (#403 review).
+        if content is None:
+            raise OutputTruncatedError(
+                f"{self.active_backend or 'openrouter'} returned HTTP 200 with null content "
+                f"(model={actual_model}, finish_reason={finish_reason!r}, "
+                f"{output_tokens} completion tokens of which {reasoning_tokens} were reasoning). "
+                f"The whole completion went to reasoning; disable reasoning or raise max_tokens.",
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+                cost=cost,
+            )
 
         return LLMResponse(
             content=content,
@@ -907,6 +1076,7 @@ class LLMClient:
             duration_ms=0,  # Set by caller
             backend="openrouter",
             raw_response=data,
+            reasoning_tokens=reasoning_tokens,
         )
 
     async def _call_openai(
@@ -1041,6 +1211,21 @@ class LLMClient:
         total_tokens = input_tokens + output_tokens
 
         cost = calculate_cost(model, input_tokens, output_tokens)
+
+        # Classifier refusal: a 200 with stop_reason "refusal" and empty (or
+        # partial, to be discarded) content — indexing content[0] would crash.
+        if data.get("stop_reason") == "refusal":
+            details = data.get("stop_details") or {}
+            if not isinstance(details, dict):
+                details = {}
+            raise ModelRefusalError(
+                _refusal_detail(model, details.get("category"), details.get("explanation")),
+                backend=self.active_backend,
+                output_tokens=output_tokens,
+                cost=cost,
+                category=details.get("category"),
+            )
+
         content = data["content"][0]["text"]
 
         return LLMResponse(

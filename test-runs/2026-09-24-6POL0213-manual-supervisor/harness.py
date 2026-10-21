@@ -21,11 +21,11 @@ os.chdir(REPO)
 
 from api.services.chunking import split_transcript  # noqa: E402
 from api.services.completeness import check_completeness, count_content_words, count_source_words  # noqa: E402
-from api.services.escalation import (
+from api.services.escalation import (  # noqa: E402
     classify_qa_failure,
     nonfixable_review_message,
     select_escalation_phases,
-)  # noqa: E402
+)
 from api.services.seam_coverage import DEFAULT_BLOCKING_RATIO, find_dropped_spans, format_gap_message  # noqa: E402
 from api.services.utils import calculate_transcript_metrics, get_srt_duration, parse_srt  # noqa: E402
 from api.services.worker import JobWorker  # noqa: E402
