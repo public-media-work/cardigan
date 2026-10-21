@@ -155,7 +155,8 @@ the reason the original `Notes` field was renamed to `Promo Notes` is unknown."*
 
 **Update 2026-10-21:** the field question is answered. On 2026-09-01, #142 recorded that
 `Platform Notes` is a Digital Team field, already used for automation timestamps and chapter
-lists, so the field itself is not the blocker.
+lists, so the field itself is not the blocker. (The automation use is the 24 `AUTO-GENERATED`
+records; the 8 chapter lists counted above were typed by hand, not written by any automation.)
 
 **What is still open** is the wider AirTable write posture: the base owner's sign-off on
 automated SST writes, and the conditions on Cardigan's SST write path. Both are tracked in
