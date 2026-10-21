@@ -14,6 +14,7 @@ Usage:
   python test-runs/export_jobs.py --out test-runs/archive/2026-09-24-all-jobs
   python test-runs/export_jobs.py --status paused failed --out ...
   CARDIGAN_API_URL=http://cardigan01:8100 (default)
+  CARDIGAN_API_KEY=...  sent as X-API-Key when set
 """
 
 import argparse
@@ -28,9 +29,25 @@ BASE = os.environ.get("CARDIGAN_API_URL", "http://cardigan01:8100")
 
 
 def get(url: str) -> tuple[int, str]:
-    r = subprocess.run(["curl", "-s", "-m", "30", "-w", "\n%{http_code}", url], capture_output=True, text=True)
+    # Send X-API-Key when the deployment has auth on. The key goes in on stdin (-H @-) so it
+    # never shows up in the process list.
+    key = os.environ.get("CARDIGAN_API_KEY", "")
+    header = f"X-API-Key: {key}" if key else ""
+    r = subprocess.run(
+        ["curl", "-s", "-m", "30", "-H", "@-", "-w", "\n%{http_code}", url],
+        input=header,
+        capture_output=True,
+        text=True,
+    )
     body, _, code = r.stdout.rpartition("\n")
     return int(code or 0), body
+
+
+def _first_line_mentions(path: Path, word: str) -> bool:
+    if not path.exists():
+        return False
+    with path.open(encoding="utf-8") as fh:
+        return word in fh.readline()
 
 
 def main() -> int:
@@ -126,10 +143,7 @@ def main() -> int:
                 }
                 for p in phases
             ],
-            "chunked": any(
-                "chunked" in (open(jdir / f, encoding="utf-8").readline() if (jdir / f).exists() else "")
-                for f in ["formatter_output.md"]
-            ),
+            "chunked": _first_line_mentions(jdir / "formatter_output.md", "chunked"),
             "artifacts_saved": saved,
         }
         index.append(row)

@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 class _Resp:
@@ -32,14 +33,25 @@ class _Curl:
     """curl-backed GET: the sandbox allows curl to the LAN host but not Python sockets."""
 
     def get(self, url):
-        r = subprocess.run(["curl", "-s", "-m", "20", "-w", "\\n%{http_code}", url], capture_output=True, text=True)
+        # The key goes in on stdin (-H @-) so it never shows up in the process list.
+        key = os.environ.get("CARDIGAN_API_KEY", "")
+        header = f"X-API-Key: {key}" if key else ""
+        r = subprocess.run(
+            ["curl", "-s", "-m", "20", "-H", "@-", "-w", "\\n%{http_code}", url],
+            input=header,
+            capture_output=True,
+            text=True,
+        )
         body, _, code = r.stdout.rpartition("\n")
         return _Resp(int(code or 0), body)
 
 
 HTTP = _Curl()
 
-REPO = "/Users/mriechers/Developer/cardigan/.claude/worktrees/linear-dreaming-bumblebee"
+# The checkout whose escalation.py is under test. The FINDINGS numbers were produced with
+# prod's revision (e142891) checked out; to reproduce them, point CARDIGAN_REPO at a worktree
+# on that commit. Defaults to the repo this file lives in.
+REPO = os.environ.get("CARDIGAN_REPO", str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, REPO)
 from api.services import escalation as esc  # noqa: E402
 
