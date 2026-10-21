@@ -2,7 +2,7 @@
 
 Companion to `config/sst_field_map.json`, which holds the mapping itself as data.
 This file answers questions 3 and 4 of the "Map every deliverable to its AirTable
-SST field" ticket, on the map *Kristian ships an IWP episode end-to-end, web-only*.
+SST field" ticket, on the closed map [Wayfinder] Cardigan V5 (#328).
 
 **Method note.** The mapping is derived from code — `WRITABLE_FIELDS` carries real
 AirTable field ids, so the eight writable fields are confirmed. **G3 was closed
