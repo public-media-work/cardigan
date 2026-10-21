@@ -135,7 +135,7 @@ a Copy Revision Document showing my suggestions.
 Key findings:
 [Specific issues identified in the actual content]
 
-I've provided detailed reasoning for each suggestion in the document above.
+I've noted why for each suggestion in the document above.
 What's your preference on direction?"
 
 ---

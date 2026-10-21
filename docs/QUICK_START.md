@@ -10,7 +10,7 @@ Get **The Metadata Neighborhood** running in 5 minutes.
 cd ai-editorial-assistant-v3
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 ```
 
 ### 2. Set up the local domain (optional but nice)

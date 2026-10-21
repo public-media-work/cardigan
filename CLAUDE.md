@@ -79,7 +79,7 @@ cd web && npm run dev
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock   # pinned; compiled from requirements.txt + requirements-dev.txt
 ```
 
 ## Architecture
@@ -125,9 +125,11 @@ find yourself about to write a status document, put it in the issue instead.
   `docs/agents/triage-labels.md` (the five canonical labels),
   `docs/agents/domain.md` (what to read before exploring).
 
-The repo is `public-media-work/cardigan`. Note that the GHCR image prefix is
-`ghcr.io/mriechers/cardigan` — a different, still-current path. Don't "correct"
-one into the other.
+The repo is `public-media-work/cardigan` and images publish to
+`ghcr.io/public-media-work/cardigan-{api,worker,web,diarization}`. The older
+`ghcr.io/mriechers/cardigan-*` path is **retired**: after the repo moved orgs,
+`GITHUB_TOKEN` could no longer write another account's packages, which froze
+production at 2026-07-20 for two months. Don't reintroduce it.
 
 ### Picking up work
 
@@ -170,7 +172,7 @@ Design docs live next to the code they describe, or in the epic that owns the wo
 
 - `docs/SYSTEM_RESTART_DESIGN.md` — system-components restart design (shipped)
 - `standalone-agents/youtube-copy-audit/FEATURE.md` — YouTube metadata POC scope
-- `docs/adr/` — architecture decision records (created lazily; none written yet)
+- `docs/adr/` — architecture decision records (created lazily). `0001` — run V4 natively in an LXC (#470)
 - Epic scope lives in the epic issue (e.g. Epic L `#233`, Epic M `#234`,
   Epic K `#232` for v5 hosting)
 
@@ -266,7 +268,8 @@ being migrated off. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. **Neither exists
-yet** — both are created lazily, when there is something worth recording. Don't go
-looking for them; write the first one when you have the first decision.
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, both created
+lazily, when there is something worth recording. `docs/adr/` has its first
+record (`0001`, native V4 deploy); `CONTEXT.md` does not exist yet — write it
+when you have the first domain term worth pinning down.
 See `docs/agents/domain.md`.

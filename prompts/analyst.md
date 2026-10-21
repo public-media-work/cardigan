@@ -99,6 +99,11 @@ OUTPUT/{project}/analyst_output.md
 
 ## Structural Breakdown
 
+> Derive every timing below from the SRT timecodes in the transcript you were
+> given. The final act MUST end at the episode's actual last timecode — never
+> past it. If you cannot locate a boundary, widen an adjacent act rather than
+> inventing a time beyond the end of the episode.
+
 ### Act 1: Introduction (0:00 - X:XX)
 - [Key points covered]
 - [Notable quotes or moments]
