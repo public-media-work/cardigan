@@ -5,7 +5,14 @@ import { AGENT_INFO } from '../constants/agents'
 import ModelStatsWidget from '../components/ModelStatsWidget'
 import PhaseStatsWidget from '../components/PhaseStatsWidget'
 import RestartComponentsButton from '../components/RestartComponentsButton'
-import { groupAvailableModels } from '../utils/modelGroups'
+import {
+  aliasOptionLabel,
+  familyLabel,
+  groupAvailableModels,
+  isModelAlias,
+  resolvedModelName,
+  type ModelAliasOption,
+} from '../utils/modelGroups'
 import { isRemotePreview } from '../utils/preview'
 
 // Upper bound on the "restarting…" banner. Recovery is normally detected from
@@ -27,6 +34,7 @@ interface PhaseModelsConfig {
   phase_models: Record<string, string>
   available_models: AvailableModel[]
   available_phases: string[]
+  model_aliases?: ModelAliasOption[]
 }
 
 interface BackendInfo {
@@ -288,6 +296,7 @@ export default function Settings() {
     () => groupAvailableModels(phaseModels?.available_models || []),
     [phaseModels?.available_models],
   )
+  const modelAliases = phaseModels?.model_aliases || []
 
   const handleAddEndpoint = async () => {
     setBackendBusy(true)
@@ -616,6 +625,12 @@ export default function Settings() {
                   const currentModel = pendingPhaseModels?.[agent.id]
                     || phaseModels?.phase_models?.[agent.id]
                     || ''
+                  const currentAlias = isModelAlias(currentModel)
+                    ? modelAliases.find((a) => a.id === currentModel)
+                    : undefined
+                  const runsOn = currentAlias
+                    ? resolvedModelName(currentAlias, phaseModels?.available_models || [])
+                    : null
 
                   return (
                     <div key={agent.id} className="p-4 bg-surface-900 rounded-lg space-y-2">
@@ -634,7 +649,17 @@ export default function Settings() {
                           onChange={(e) => handlePhaseModelChange(agent.id, e.target.value)}
                           className="pl-3 pr-8 py-2 rounded-md border text-sm font-medium bg-surface-800 border-surface-600 text-surface-200"
                           aria-label={`Select model for ${agent.name} agent`}
+                          aria-describedby={currentAlias ? `model-${agent.id}-runs-on` : undefined}
                         >
+                          {modelAliases.length > 0 && (
+                            <optgroup label="Latest (follows new releases)">
+                              {modelAliases.map((a) => (
+                                <option key={a.id} value={a.id} className="bg-surface-800 text-white">
+                                  {aliasOptionLabel(a, phaseModels?.available_models || [])}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
                           {modelGroups.map((group) => (
                             <optgroup key={group.label} label={group.label}>
                               {group.models.map((m) => (
@@ -647,6 +672,13 @@ export default function Settings() {
                         </select>
                       </div>
                       <p className="text-sm text-surface-400 pl-8 max-w-prose">{agent.description}</p>
+                      {currentAlias && (
+                        <p id={`model-${agent.id}-runs-on`} className="text-sm text-surface-300 pl-8 max-w-prose">
+                          {runsOn
+                            ? `Runs on ${runsOn} now. Switches automatically when a newer ${familyLabel(currentAlias)} is released.`
+                            : `Follows the newest ${familyLabel(currentAlias)}. The current version can't be checked right now.`}
+                        </p>
+                      )}
                     </div>
                   )
                 })}
