@@ -152,12 +152,15 @@ class AirtableClient:
 
         return results
 
-    async def get_sst_record(self, record_id: str) -> Optional[dict]:
+    async def get_sst_record(self, record_id: str, by_field_id: bool = False) -> Optional[dict]:
         """
         Fetch a specific SST record by Airtable record ID.
 
         Args:
             record_id: Airtable record ID (e.g., "recXXXXXXXXXXXXXX")
+            by_field_id: Key ``fields`` by field id instead of field name.
+                Immune to fields being renamed in the base, which happens in
+                place and would otherwise make a renamed field read as empty.
 
         Returns:
             Record dict if found, None if not found.
@@ -167,10 +170,11 @@ class AirtableClient:
             httpx.HTTPError: On network or API errors (except 404)
         """
         url = f"{self.API_BASE_URL}/{self.BASE_ID}/{self.TABLE_ID}/{record_id}"
+        params = {"returnFieldsByFieldId": "true"} if by_field_id else None
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                response = await client.get(url, headers=self.headers)
+                response = await client.get(url, headers=self.headers, params=params)
                 response.raise_for_status()
                 return response.json()
 

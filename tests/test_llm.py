@@ -146,6 +146,24 @@ async def test_call_openrouter_max_tokens_honors_backend_config(monkeypatch):
     assert captured["payload"]["max_tokens"] == 16384
 
 
+def test_packaged_openrouter_backends_all_set_max_tokens():
+    """Every shipped OpenRouter backend sets max_tokens (#470 job 26).
+
+    #403 capped only the ``openrouter`` backend, so the analyst phase on
+    ``openrouter-cheapskate`` hit the 4096 default on an 18-minute transcript.
+    """
+    import json
+    from pathlib import Path
+
+    config = json.loads((Path(__file__).resolve().parents[1] / "config" / "llm-config.json").read_text())
+    uncapped = [
+        name
+        for name, backend in config["backends"].items()
+        if backend.get("type") == "openrouter" and not backend.get("max_tokens")
+    ]
+    assert not uncapped, f"OpenRouter backends without max_tokens fall back to 4096: {uncapped}"
+
+
 async def test_call_openrouter_raises_on_length_finish_reason(monkeypatch):
     """A provider-side length cutoff must fail the phase, not return success (#403).
 

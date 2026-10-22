@@ -36,6 +36,7 @@ from api.services.escalation import (
     select_escalation_phases,
 )
 from api.services.llm import (
+    DEFAULT_MAX_TOKENS,
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
@@ -88,7 +89,7 @@ SST_CONTEXT_FIELD_MAP = {
     "host": "Host",
     "presenter": "Presenter",
     "media_id": "Media ID",
-    "social_media_description": "Social Media Description",
+    "social_media_description": "Social Media Description or Producer Draft",
 }
 
 # Fields read outside the mapping above: the working-title fallback and the
@@ -864,7 +865,9 @@ Extract any name or spelling corrections that should be added to the glossary. S
             routing_config = self.llm.config.get("routing", {})
             threshold_minutes = routing_config.get("long_form_threshold_minutes", 15)
             transcript_metrics = calculate_transcript_metrics(
-                transcript_content, long_form_threshold_minutes=threshold_minutes
+                transcript_content,
+                long_form_threshold_minutes=threshold_minutes,
+                is_srt=str(job.get("transcript_file", "")).lower().endswith(".srt"),
             )
             # Prefer SRT-parsed duration over the word-count estimate so every
             # downstream consumer (routing, prompt context, persisted
@@ -1360,6 +1363,23 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # starts a fresh capacity-wait ceiling rather than inheriting this one.
                 await clear_defer_state(job_id)
 
+                # Extract the job's items (#426). Kill-switched by default
+                # (routing.items in config/llm-config.json) so this is inert in
+                # prod until the job page exists — the SST lookup it performs
+                # is the only prod-visible side effect. Non-fatal either way:
+                # a job that produced good output must not be marked failed
+                # because extraction had a bad day.
+                if self.llm.config.get("routing", {}).get("items", {}).get("enabled"):
+                    try:
+                        from api.services.item_sync import refresh_job_items
+
+                        await refresh_job_items(job_id, llm_config=self.llm.config)
+                    except Exception as item_err:
+                        logger.warning(
+                            "Failed to extract job items (non-fatal)",
+                            extra={"job_id": job_id, "error": str(item_err)},
+                        )
+
                 # Archive the transcript file (non-fatal if this fails). Only on
                 # completion — a paused job may be reviewed/retried and still needs
                 # its source transcript, so we must NOT move it away on pause.
@@ -1442,6 +1462,32 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 self._heartbeat_task = None
             self._current_job_id = None
 
+    def _reasoning_payload(self, phase_name: str, backend: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Reasoning control to send for this phase, or None to leave it alone.
+
+        Reasoning tokens are drawn from the same max_tokens budget as visible
+        output, so on a reasoning-by-default model a formatter call can spend
+        most of its cap thinking and stop mid-transcript. Formatting is
+        deterministic work that does not need it; judgment phases may, so this
+        is per-phase rather than global (#404).
+
+        Gated on backend TYPE as well as phase. ``{"enabled": False}`` is
+        OpenRouter's wire format, and ``_call_openai`` spreads ``**kwargs``
+        straight into its payload — so sending this to an openai-type backend
+        would put an unrecognised ``reasoning`` field on the request, which a
+        real OpenAI-compatible endpoint can reject outright. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format (#404 review).
+        """
+        cfg = self.llm.config.get("routing", {}).get("reasoning", {})
+        if phase_name not in (cfg.get("disabled_phases") or []):
+            return None
+        try:
+            backend_type = self.llm.get_backend_config(backend).get("type")
+        except Exception:
+            return None
+        return {"enabled": False} if backend_type == "openrouter" else None
+
     def _chunk_wrapper_instructions(self, chunk_index: int, total_chunks: int) -> str:
         """Header/footer duties for one chunk of a chunked formatter run (FMT-1).
 
@@ -1467,6 +1513,32 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "end the document with the Status footer the system prompt specifies."
             )
         return ("\n\n".join(parts) + "\n\n") if parts else ""
+
+    def _chunk_header_fields(self, context: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """Authoritative header values for a chunked formatter merge (FMT-1).
+
+        Chunk 0 only sees its own slice, so a duration it writes is the
+        slice's -- job 24 reported 00:11:06 for an 18:37 episode -- and no
+        prompt can fix that. ``merge_formatter_chunks`` writes the header from
+        these values instead; a None falls back to chunk 0's value, except
+        Duration, which is omitted.
+
+        Duration is measured from the SRT's own timecodes, never from
+        ``transcript_metrics``: without an SRT that holds a word-count
+        estimate, which would be a plausible-looking wrong value.
+        """
+        from api.services.chunking import format_duration
+        from api.services.utils import get_srt_duration, parse_srt
+
+        duration = None
+        if (context.get("transcript_file") or "").lower().endswith(".srt"):
+            duration = format_duration(get_srt_duration(parse_srt(context.get("transcript", ""))) / 60000)
+        return {
+            "Project": context.get("project_name"),
+            "Program": (context.get("sst_context") or {}).get("program"),
+            "Duration": duration,
+            "Date Processed": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
 
     def _retry_context_section(self, context: Dict[str, Any]) -> str:
         """Validator flags and editorial feedback to carry into a re-run (RETRY-1).
@@ -2460,6 +2532,10 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     exc_info=True,
                 )
 
+        # Get backend for this phase. Resolved before the chunking decision so the
+        # backend's output cap can drive it (#404).
+        backend = self.llm.get_backend_for_phase(phase_name)
+
         # Check for chunked formatter processing
         if phase_name == "formatter":
             chunking_config = self.llm.config.get("routing", {}).get("chunking", {})
@@ -2468,10 +2544,17 @@ Extract any name or spelling corrections that should be added to the glossary. S
 
                 transcript_file = context.get("transcript_file", "")
                 is_srt = transcript_file.lower().endswith(".srt")
+                # Chunk on projected output vs. what one call can emit, not on a
+                # static word threshold that said nothing about output size.
+                try:
+                    max_output_tokens = self.llm.get_backend_config(backend).get("max_tokens", DEFAULT_MAX_TOKENS)
+                except Exception:
+                    max_output_tokens = DEFAULT_MAX_TOKENS
                 chunks = split_transcript(
                     context.get("transcript", ""),
                     is_srt=is_srt,
                     config=chunking_config,
+                    max_output_tokens=max_output_tokens,
                 )
                 if chunks is not None:
                     logger.info(
@@ -2498,8 +2581,6 @@ Extract any name or spelling corrections that should be added to the glossary. S
             {"role": "user", "content": user_message},
         ]
 
-        # Get backend for this phase
-        backend = self.llm.get_backend_for_phase(phase_name)
         logger.info(
             "Running phase",
             extra={
@@ -2532,6 +2613,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 effective_timeout = 120
 
             # Call LLM with timeout
+            chat_kwargs: Dict[str, Any] = {}
+            reasoning = self._reasoning_payload(phase_name, backend)
+            if reasoning is not None:
+                chat_kwargs["reasoning"] = reasoning
+
             response: LLMResponse = await asyncio.wait_for(
                 self.llm.chat(
                     messages=messages,
@@ -2539,6 +2625,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     model=model_override,
                     job_id=job_id,
                     phase=phase_name,
+                    **chat_kwargs,
                 ),
                 timeout=effective_timeout,
             )
@@ -3074,6 +3161,13 @@ Please format this transcript section:
                     {"role": "user", "content": user_message},
                 ]
 
+                # Chunked runs are still formatter work, so they honor the same
+                # reasoning control as the single-call path (#404).
+                chunk_kwargs: Dict[str, Any] = {}
+                chunk_reasoning = self._reasoning_payload("formatter", backend)
+                if chunk_reasoning is not None:
+                    chunk_kwargs["reasoning"] = chunk_reasoning
+
                 response = await asyncio.wait_for(
                     self.llm.chat(
                         messages=messages,
@@ -3081,6 +3175,7 @@ Please format this transcript section:
                         job_id=job_id,
                         phase="formatter",
                         model=model_override,
+                        **chunk_kwargs,
                     ),
                     timeout=effective_timeout,
                 )
@@ -3195,7 +3290,10 @@ Please format this transcript section:
             actual_model = next((r.get("model") for r in chunk_results if r.get("model")), None)
 
             # Merge text outputs
-            merged = merge_formatter_chunks([r["content"] for r in chunk_results])
+            merged = merge_formatter_chunks(
+                [r["content"] for r in chunk_results],
+                header_fields=self._chunk_header_fields(context),
+            )
 
             # Style-engine post-generation hook, run ONCE on the merged output
             # (not per-chunk -- see `_apply_style_post` for shadow/enforce/

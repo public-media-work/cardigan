@@ -22,6 +22,13 @@ DEFAULT_CHUNKING_CONFIG = {
     "target_chunk_words": 1500,
     "overlap_captions": 5,
     "max_parallel": 3,
+    # Projected output tokens per source word. Measured 1.77 on lyric-dense
+    # content (job 48) and 1.80-1.86 on dense talk with reasoning off
+    # (6POL0213); rounded up because under-chunking truncates while
+    # over-chunking only costs a little latency.
+    "tokens_per_word": 2.0,
+    # Headroom for the metadata header, speaker labels, and ratio variance.
+    "safety_factor": 0.8,
 }
 
 
@@ -40,6 +47,25 @@ class TranscriptChunk:
 def _count_dialogue_words_srt(captions: List[SRTCaption]) -> int:
     """Count dialogue words across SRT captions (text only, no timecodes)."""
     return sum(len(c.text.split()) for c in captions)
+
+
+def output_word_budget(
+    max_output_tokens: int,
+    tokens_per_word: float = 2.0,
+    safety_factor: float = 0.8,
+) -> int:
+    """How many source words one call can format within its output cap.
+
+    Chunking exists to keep each call's OUTPUT inside the model's completion
+    limit, so the gate belongs in those units. A word-count threshold could not
+    express it: a sparse hour-long program fell under the threshold while a
+    dense short one sailed past, and neither fact said anything about whether
+    the output would fit (#404).
+
+    Deriving the budget from the cap makes the two move together — raise
+    ``max_tokens`` and chunking backs off; lower it and chunking engages.
+    """
+    return int(max_output_tokens / tokens_per_word * safety_factor)
 
 
 # How far past the word target to scan for a natural chunk boundary.
@@ -100,8 +126,10 @@ def _split_srt(
         return None
 
     total_words = _count_dialogue_words_srt(captions)
-    if total_words < target_chunk_words * 1.5:
-        # Would produce only 1 chunk
+    if total_words <= target_chunk_words:
+        # Fits in a single chunk. Previously ``< target * 1.5``, which skipped
+        # transcripts between 1x and 1.5x the target — genuinely oversized work
+        # that then went out as one call (#404).
         return None
 
     chunks: List[TranscriptChunk] = []
@@ -186,7 +214,8 @@ def _split_plain_text(
         return None
 
     total_words = sum(len(p.split()) for p in paragraphs)
-    if total_words < target_chunk_words * 1.5:
+    if total_words <= target_chunk_words:
+        # Fits in a single chunk (see the SRT splitter's note on the old 1.5x guard).
         return None
 
     chunks: List[TranscriptChunk] = []
@@ -253,16 +282,21 @@ def split_transcript(
     content: str,
     is_srt: bool,
     config: Optional[Dict] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> Optional[List[TranscriptChunk]]:
     """Split a transcript into chunks for parallel processing.
 
-    Returns None if the transcript is below threshold or only produces
-    one chunk — caller should use the normal single-call path.
+    Returns None if the transcript fits one call or only produces one chunk —
+    the caller then uses the normal single-call path.
 
     Args:
         content: Raw transcript content (SRT or plain text)
         is_srt: Whether the content is SRT format
         config: Chunking config from llm-config.json routing.chunking
+        max_output_tokens: The backend's completion cap. When given, the gate
+            and the chunk target both derive from it (see output_word_budget),
+            replacing the static word thresholds. When omitted, the legacy
+            ``threshold_words``/``target_chunk_words`` behavior applies.
 
     Returns:
         List of TranscriptChunk if chunking applies, None otherwise
@@ -279,15 +313,36 @@ def split_transcript(
     else:
         word_count = len(content.split())
 
-    threshold = cfg["threshold_words"]
-    if word_count < threshold:
-        logger.debug(
-            "Transcript below chunking threshold",
-            extra={"word_count": word_count, "threshold": threshold},
+    # Prefer the output-budget gate when the caller knows the cap; fall back to
+    # the static thresholds otherwise (#404).
+    if max_output_tokens:
+        threshold = output_word_budget(
+            max_output_tokens,
+            tokens_per_word=cfg.get("tokens_per_word", 2.0),
+            safety_factor=cfg.get("safety_factor", 0.8),
+        )
+        target = threshold
+    else:
+        threshold = cfg["threshold_words"]
+        target = cfg["target_chunk_words"]
+
+    # `<=` on the budget path (a transcript exactly at budget fits one call);
+    # `<` on the legacy path, preserving its original boundary exactly — the
+    # unified `<=` silently changed behaviour for a transcript landing on
+    # threshold_words, on a path this change was not meant to touch (#404 review).
+    if (word_count <= threshold) if max_output_tokens else (word_count < threshold):
+        # Logged at info: prod previously had no record of WHY chunking was
+        # skipped, which is what let #404 hide.
+        logger.info(
+            "Transcript fits a single call — not chunking",
+            extra={
+                "word_count": word_count,
+                "budget_words": threshold,
+                "max_output_tokens": max_output_tokens,
+            },
         )
         return None
 
-    target = cfg["target_chunk_words"]
     overlap = cfg.get("overlap_captions", 5)
 
     if is_srt:
@@ -308,18 +363,57 @@ def split_transcript(
     return chunks
 
 
-def merge_formatter_chunks(chunks: List[str]) -> str:
+# The formatter contract's header fields, in the order prompts/formatter.md
+# writes them.
+HEADER_FIELDS = ("Project", "Program", "Duration", "Date Processed")
+
+_HEADER_LINE_RE = re.compile(r"^\*\*(Project|Program|Duration|Date Processed):\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+
+# Review notes come in two forms. The contract (prompts/formatter.md) only
+# ever asks for ``<!-- REVIEW NOTES: ... -->`` -- one comment, closed by the
+# first ``-->``. The legacy arrow form ``<!-- REVIEW NOTES -->`` followed by
+# loose text (optionally closed by ``<!-- /REVIEW NOTES -->``) is what this
+# merge used to read and write; real formatter output never used it, so the
+# contract form went unrecognised and its notes stayed in chunk bodies.
+# Strip the arrow form first: the contract pattern would also match its
+# opening comment as an empty block.
+_ARROW_NOTES_RE = re.compile(r"<!--\s*REVIEW NOTES\s*-->(.*?)(?=<!--|$)", re.DOTALL | re.IGNORECASE)
+_ARROW_NOTES_CLOSE_RE = re.compile(r"<!--\s*/REVIEW NOTES\s*-->", re.IGNORECASE)
+_CONTRACT_NOTES_RE = re.compile(r"<!--\s*REVIEW NOTES\b[^\n]*?:?[ \t]*\n?(.*?)-->", re.DOTALL | re.IGNORECASE)
+
+
+def format_duration(minutes) -> Optional[str]:
+    """Render a duration in minutes as the header's ``HH:MM:SS``, or None."""
+    try:
+        total = round(float(minutes) * 60)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def merge_formatter_chunks(chunks: List[str], header_fields: Optional[Dict[str, Optional[str]]] = None) -> str:
     """Merge formatted chunk outputs into a single document.
 
-    1. Keep header (before first ---) from chunk 0 only
+    1. Keep header (before first ---) from chunk 0 only -- or, when
+       ``header_fields`` is given, write the header from it and discard the
+       model-written one
     2. Strip headers from chunks 1+
     3. Strip Status line from all but last chunk
     4. Collect review notes into one block at top
     5. Deduplicate overlap at chunk seams
     6. Concatenate
 
+    ``header_fields`` maps the contract's header names (``HEADER_FIELDS``) to
+    authoritative values from job metadata (FMT-1). Chunk 0 only sees its own
+    slice of the transcript, so it cannot know the episode's duration -- job 24
+    reported 00:11:06 for an 18.6-minute episode. A field whose value is None
+    falls back to whatever chunk 0 wrote for it.
+
     Args:
         chunks: List of formatted output strings, one per chunk
+        header_fields: Authoritative header values, or None to keep chunk 0's
 
     Returns:
         Merged formatter output
@@ -331,7 +425,6 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
 
     # Extract all review notes
     review_notes: List[str] = []
-    review_pattern = re.compile(r"<!--\s*REVIEW NOTES\s*-->.*?(?=<!--|$)", re.DOTALL | re.IGNORECASE)
 
     # Process each chunk
     header = ""
@@ -375,14 +468,16 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
         # Clean up orphaned --- separators left after attribution removal
         chunk = re.sub(r"\n---+\s*\n*$", "", chunk.strip())
 
-        # Extract review notes from this chunk
-        notes = review_pattern.findall(chunk)
-        for note in notes:
-            note = note.strip()
-            if note and note not in review_notes:
-                review_notes.append(note)
-        # Remove review notes from chunk body
-        chunk = review_pattern.sub("", chunk).strip()
+        # Lift review notes out of every chunk, line by line (seam overlap can
+        # repeat a note), so none is left in a body or dropped with chunk 0's
+        # header when header_fields replaces it.
+        for block in _ARROW_NOTES_RE.findall(chunk) + _CONTRACT_NOTES_RE.findall(chunk):
+            for line in block.splitlines():
+                line = line.strip()
+                if line and line not in review_notes:
+                    review_notes.append(line)
+        chunk = _CONTRACT_NOTES_RE.sub("", _ARROW_NOTES_RE.sub("", chunk))
+        chunk = _ARROW_NOTES_CLOSE_RE.sub("", chunk).strip()
 
         if i == 0:
             # First chunk: extract header (everything before first ---)
@@ -392,6 +487,12 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
                 body = parts[1].strip()
             else:
                 body = chunk
+                if header_fields is not None:
+                    # No rule to split on: lift any header lines out of the
+                    # body so the deterministic header is the only one.
+                    header = "\n".join(m.group(0) for m in _HEADER_LINE_RE.finditer(body))
+                    body = re.sub(r"^#\s+Formatted Transcript\s*\n?", "", body, flags=re.MULTILINE)
+                    body = _HEADER_LINE_RE.sub("", body).strip()
         else:
             # Subsequent chunks: strip any generated header
             body = chunk
@@ -422,16 +523,28 @@ def merge_formatter_chunks(chunks: List[str]) -> str:
     for i in range(len(bodies) - 1):
         bodies[i + 1] = _dedup_seam_turns(bodies[i], bodies[i + 1])
 
+    if header_fields is not None:
+        model_values = dict(_HEADER_LINE_RE.findall(header))
+        lines = ["# Formatted Transcript"]
+        for name in HEADER_FIELDS:
+            value = header_fields.get(name)
+            if not value and name != "Duration":
+                # Duration never falls back: chunk 0 cannot see the whole
+                # episode, so its value is a confident wrong one. Omit it.
+                value = model_values.get(name)
+            if value:
+                lines.append(f"**{name}:** {value}")
+        header = "\n".join(lines)
+
     # Build final document
     parts = []
 
     if header:
         parts.append(header)
 
-    # Add consolidated review notes
+    # Add consolidated review notes, in the contract's own form
     if review_notes:
-        notes_block = "<!-- REVIEW NOTES -->\n" + "\n".join(review_notes) + "\n<!-- /REVIEW NOTES -->"
-        parts.append(notes_block)
+        parts.append("<!-- REVIEW NOTES:\n" + "\n".join(review_notes) + "\n-->")
 
     if header or review_notes:
         parts.append("---")

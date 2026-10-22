@@ -26,7 +26,7 @@ if [ -d "venv" ]; then
     echo "✓ Activated venv ($(python --version))"
 else
     echo "⚠ No virtual environment found"
-    echo "  Run: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+    echo "  Run: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.lock"
 fi
 
 # Show git status

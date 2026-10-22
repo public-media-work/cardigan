@@ -45,3 +45,38 @@ def test_srt_file_uses_actual_duration_not_word_count():
     duration_minutes = round(duration_ms / 60000, 2)
     assert duration_minutes > 1.0
     assert duration_minutes == pytest.approx(18.14, abs=0.01)
+
+
+def test_calculate_transcript_metrics_excludes_srt_markup():
+    """word_count must count spoken words, not SRT timecodes and index numbers (#404).
+
+    The naive ``content.split()`` counted ~4 markup tokens per caption, inflating
+    the operator-facing word count by the caption count (job 48: 3750 vs 2318).
+    """
+    from api.services.utils import calculate_transcript_metrics
+
+    srt = "\n".join(
+        [
+            "1",
+            "00:00:00,000 --> 00:00:03,000",
+            "one two three",
+            "",
+            "2",
+            "00:00:03,000 --> 00:00:06,000",
+            "four five six",
+            "",
+        ]
+    )
+
+    metrics = calculate_transcript_metrics(srt, is_srt=True)
+
+    assert metrics["word_count"] == 6, "should count only the six spoken words"
+
+
+def test_calculate_transcript_metrics_plain_text_unchanged():
+    """Plain text keeps the simple whitespace count (#404 regression guard)."""
+    from api.services.utils import calculate_transcript_metrics
+
+    metrics = calculate_transcript_metrics("one two three four five")
+
+    assert metrics["word_count"] == 5

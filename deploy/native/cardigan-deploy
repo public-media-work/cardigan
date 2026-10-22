@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# cardigan-deploy — deploy one exact commit to a native Cardigan box (#470).
+#
+#   cardigan-deploy [--force] <sha|tag>          (as root; see README for tmux)     (--force may go anywhere)
+#
+# Every step verifies its own outcome and the script exits non-zero the moment
+# one fails (#442: no silent deploys) -- an ERR trap catches any step without
+# its own check, so every failure prints the rollback hint. In order:
+#   1. fetch, resolve <ref> to a commit; refuse branch names (deploy what you mean)
+#   2. refuse if jobs are in progress (unless --force) or the checkout is dirty
+#   3. check out the commit; install from requirements.lock; reinstall the
+#      package so api/_version.py matches the commit
+#   4. build the dashboard and publish it to /var/www/cardigan
+#   5. install units, render the nginx site, nginx -t + reload
+#   6. print config drift (live vs repo values; live values are kept)
+#   7. stop the worker, restart api (runs migrations), wait for health, then
+#      start the worker -- no job runs against a schema mid-migration
+#   8. verify GET / reports the expected version; write DEPLOYED_SHA
+#
+# Rollback = cardigan-deploy <previous sha> (printed on failure; it is the last
+# SUCCESSFUL deploy, from DEPLOYED_SHA). Commits that predate the native deploy
+# (no requirements.lock or deploy/native/) are refused. Schema migrations are
+# forward-only; restore the DB from a ZFS snapshot if needed.
+set -euo pipefail
+
+APP=/opt/cardigan
+VENV=/opt/cardigan-venv
+ETC=/etc/cardigan
+WWW=/var/www/cardigan
+API=http://127.0.0.1:8100
+PROVENANCE="$APP/DEPLOYED_SHA"     # last successful deploy only
+LAST_ATTEMPT="$APP/LAST_ATTEMPT"   # every run that changed something, ok or failed
+SITE=/etc/nginx/sites-available/cardigan
+# Read by nginx workers (www-data) per request, so it lives outside /etc/cardigan.
+PREVIEW_HTPASSWD=/etc/nginx/cardigan-preview.htpasswd
+
+# Refused before anything changed: no rollback hint, and LAST_ATTEMPT is left
+# alone so it still describes the last real attempt.
+refuse() { trap - ERR; echo "DEPLOY REFUSED: $* (nothing was changed)" >&2; exit 1; }
+die() {
+  trap - ERR
+  echo "DEPLOY FAILED: $*" >&2
+  if [[ -n "${PREV_SHA:-}" ]]; then
+    # ROLLBACK_FLAGS is "--force " while the api may be active but not
+    # answering: the rollback's pre-flight would read the queue as "?" and
+    # refuse. (A stopped api skips the queue check, so --force is just safe.)
+    echo "Previous commit: $PREV_SHA  (rollback: cardigan-deploy ${ROLLBACK_FLAGS:-}$PREV_SHA)" >&2
+  fi
+  if [[ -n "${SHA:-}" ]]; then
+    printf 'sha=%s\nstatus=failed\nreason=%s\nat=%s\n' "$SHA" "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > "$LAST_ATTEMPT" 2>/dev/null || true
+  fi
+  exit 1
+}
+# Any failing command without its own `|| die` still reports and hints at
+# rollback. -E carries the trap into functions and subshells.
+set -E
+trap 'die "command failed at line $LINENO: $BASH_COMMAND"' ERR
+step() { echo; echo "==> $*"; }
+# runuser keeps root's HOME; give npm/pip caches a home the app user owns.
+CACHE_HOME=/var/cache/cardigan
+as_app() { runuser -u cardigan -- env HOME="$CACHE_HOME" "$@"; }
+# Run as the app user with the runtime env loaded (paths + secrets).
+as_app_env() {
+  runuser -u cardigan -- env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$CACHE_HOME" bash -c \
+    'set -a; . /etc/cardigan/cardigan.env; [ -r /etc/cardigan/secrets.env ] && . /etc/cardigan/secrets.env; set +a; cd /opt/cardigan; exec "$@"' _ "$@"
+}
+
+[[ $EUID -eq 0 ]] || refuse "run as root (see deploy/native/README.md)"
+
+# A dropped ssh session mid-deploy can kill this script while the worker is
+# stopped. That state is safe (no jobs against a half-migrated schema), and
+# re-running the same command recovers it. Running under tmux avoids it.
+if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+  echo "warning: not in tmux/screen; a dropped ssh session can leave the worker stopped (see README)" >&2
+fi
+REF=""; FORCE=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) FORCE=--force ;;
+    -*) refuse "unknown option '$arg' (usage: cardigan-deploy [--force] <sha|tag>)" ;;
+    *) [[ -z "$REF" ]] || refuse "more than one ref given ('$REF', '$arg')"; REF="$arg" ;;
+  esac
+done
+[[ -n "$REF" ]] || refuse "usage: cardigan-deploy [--force] <sha|tag>"
+# One deploy at a time: a second run (e.g. re-run after a dropped session)
+# must not interleave checkout, npm ci and migrations with one still going.
+{ exec 9> /run/lock/cardigan-deploy; } 2>/dev/null || refuse "cannot open /run/lock/cardigan-deploy"
+flock -n 9 || refuse "another cardigan-deploy is running (see $APP/LAST_ATTEMPT)"
+cd "$APP"
+
+# The rollback target is the last SUCCESSFUL deploy. HEAD can't be trusted: a
+# deploy that failed after checkout leaves HEAD on the broken commit. HEAD is
+# only the fallback for the first deploy, before DEPLOYED_SHA exists.
+PREV_SHA=""
+if [[ -r "$PROVENANCE" ]]; then
+  PREV_SHA=$(sed -n 's/^sha=//p' "$PROVENANCE")
+fi
+if [[ -z "$PREV_SHA" ]]; then
+  PREV_SHA=$(as_app git rev-parse HEAD 2>/dev/null || true)
+fi
+
+step "Resolve $REF"
+as_app git fetch --quiet --tags --prune origin
+if as_app git show-ref --verify --quiet "refs/remotes/origin/$REF"; then
+  refuse "'$REF' is a branch. Deploy an exact commit or tag, e.g. cardigan-deploy \$(git rev-parse origin/$REF)"
+fi
+SHA=$(as_app git rev-parse --verify --quiet "$REF^{commit}") || refuse "cannot resolve '$REF' to a commit"
+echo "commit $SHA (last deployed: ${PREV_SHA:-none})"
+for need in requirements.lock deploy/native/cardigan-deploy; do
+  as_app git cat-file -e "$SHA:$need" 2>/dev/null \
+    || refuse "$SHA predates the native deploy (no $need); cannot deploy it here"
+done
+
+step "Pre-flight"
+if [[ -n "$(as_app git status --porcelain --untracked-files=no)" ]]; then
+  as_app git status --short --untracked-files=no >&2
+  refuse "checkout has local changes; resolve them before deploying"
+fi
+if systemctl is-active --quiet cardigan-api; then
+  IN_PROGRESS=$(curl -fsS --max-time 10 "$API/api/system/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("queue",{}).get("in_progress",0))' 2>/dev/null || echo "?")
+  if [[ "$IN_PROGRESS" != "0" && "$FORCE" != "--force" ]]; then
+    refuse "$IN_PROGRESS job(s) in progress (or health unreadable); wait, or re-run with --force"
+  fi
+fi
+
+step "Check out and install"
+# From here on the box changes. Record the attempt now: a later `started` with
+# no `ok` or `failed` means the run died partway (e.g. a dropped session).
+printf 'sha=%s\nstatus=started\nat=%s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LAST_ATTEMPT"
+as_app git checkout --quiet --detach "$SHA"
+as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check -r requirements.lock
+as_app "$VENV/bin/pip" install --quiet --disable-pip-version-check --no-deps -e .
+EXPECTED=$(as_app "$VENV/bin/python" -c 'from api._version import __version__; print(__version__)') \
+  || die "api/_version.py was not written by the package install"
+echo "expected version $EXPECTED"
+
+step "Build dashboard"
+cd web
+as_app npm ci --silent --no-audit --no-fund || die "web build failed (npm ci)"
+as_app npm run --silent build || die "web build failed (npm run build)"
+cd "$APP"
+[[ -f web/dist/index.html ]] || die "web build produced no index.html"
+rsync -a --delete web/dist/ "$WWW/"
+
+step "Units and nginx"
+install -m 0644 deploy/native/cardigan-{api,worker}.service /etc/systemd/system/
+install -m 0755 deploy/native/cardigan-deploy /usr/local/sbin/cardigan-deploy
+systemctl daemon-reload
+CARDIGAN_API_KEY=$(set -a; . "$ETC/cardigan.env"; if [[ -r "$ETC/secrets.env" ]]; then . "$ETC/secrets.env"; fi; echo "${CARDIGAN_API_KEY:-}")
+# The key lands inside a double-quoted nginx string: refuse anything that would
+# break out of it or be interpolated.
+case "$CARDIGAN_API_KEY" in
+  *[\"\\\$[:space:]]*) die "CARDIGAN_API_KEY contains a quote, backslash, \$ or whitespace; nginx can't carry it safely" ;;
+esac
+CARDIGAN_API_KEY="$CARDIGAN_API_KEY" envsubst '${CARDIGAN_API_KEY}' \
+  < deploy/native/nginx-cardigan.conf.template > "$SITE.new"
+# The public preview vhost (:3101, the Cloudflare Tunnel target, #485) is on
+# only while a non-empty htpasswd is present — the same rule as the image.
+# Removing the file (or syncing without CARDIGAN_WEB_HTPASSWD) turns it off on
+# the next deploy.
+if [[ -s "$PREVIEW_HTPASSWD" ]]; then
+  CARDIGAN_API_KEY="$CARDIGAN_API_KEY" envsubst '${CARDIGAN_API_KEY}' \
+    < deploy/native/nginx-cardigan-preview.conf.template >> "$SITE.new"
+  echo "preview vhost :3101 ON ($(grep -c . "$PREVIEW_HTPASSWD") htpasswd user(s))"
+else
+  echo "preview vhost :3101 off (no $PREVIEW_HTPASSWD)"
+fi
+chmod 0600 "$SITE.new"
+# nginx -t can only test the site in place, so keep the old one to put back:
+# otherwise a failed test leaves a broken site for the next reload or reboot.
+if [[ -f "$SITE" ]]; then cp -p "$SITE" "$SITE.prev"; fi
+mv "$SITE.new" "$SITE"
+if ! nginx -t -q; then
+  if [[ -f "$SITE.prev" ]]; then mv "$SITE.prev" "$SITE"; else rm -f "$SITE"; fi
+  die "nginx config test failed (previous site restored; live nginx unchanged)"
+fi
+rm -f "$SITE.prev"
+systemctl reload-or-restart nginx
+
+step "Config drift"
+as_app_env python scripts/config_drift.py || true
+LIVE_GLOSSARY=$(set -a; . "$ETC/cardigan.env"; echo "${KNOWLEDGE_DIR:-}")/glossary.md
+if [[ -f "$LIVE_GLOSSARY" ]] && ! cmp -s "$LIVE_GLOSSARY" knowledge/glossary.md; then
+  echo "Note: repo knowledge/glossary.md differs from the live $LIVE_GLOSSARY (live kept)."
+fi
+
+step "Restart"
+# Stop the worker first: the API's ExecStartPre runs `alembic upgrade head`, and
+# the old worker must not pick up a job against a schema mid-migration.
+systemctl stop cardigan-worker || die "could not stop cardigan-worker"
+ROLLBACK_FLAGS="--force "
+systemctl restart cardigan-api || die "cardigan-api failed to start (journalctl -u cardigan-api); cardigan-worker is stopped"
+# 240s, inside the unit's TimeoutStartSec=300, so this wait never outlasts systemd.
+for _ in $(seq 1 120); do
+  curl -fsS --max-time 5 "$API/api/system/health" >/dev/null 2>&1 && break
+  sleep 2
+done
+curl -fsS --max-time 5 "$API/api/system/health" >/dev/null || die "API not healthy after 240s (journalctl -u cardigan-api); cardigan-worker is stopped"
+ROLLBACK_FLAGS=""
+systemctl restart cardigan-worker || die "cardigan-worker failed to start (journalctl -u cardigan-worker)"
+# Long enough to catch an import-time crash; NRestarts resets on a manual start,
+# so any non-zero value means it has already crash-looped.
+sleep 10
+systemctl is-active --quiet cardigan-worker || die "cardigan-worker is not running (journalctl -u cardigan-worker)"
+[[ "$(systemctl show -p NRestarts --value cardigan-worker)" == "0" ]] \
+  || die "cardigan-worker restarted after start-up (journalctl -u cardigan-worker)"
+
+step "Verify"
+RUNNING=$(curl -fsS --max-time 5 "$API/" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])') \
+  || die "GET / did not return a version"
+[[ "$RUNNING" == "$EXPECTED" ]] || die "running version '$RUNNING' != expected '$EXPECTED'"
+curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:3100/ || die "dashboard not served on :3100"
+# The preview vhost is a public surface: prove its wall is up, not just that it answers.
+if [[ -s "$PREVIEW_HTPASSWD" ]]; then
+  WALL=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:3101/ || true)
+  [[ "$WALL" == "401" ]] || die "preview vhost :3101 returned $WALL to an unauthenticated request (expected 401)"
+fi
+
+printf 'sha=%s\nref=%s\nversion=%s\ndeployed_at=%s\ndeployed_by=%s\nprevious=%s\n' \
+  "$SHA" "$REF" "$RUNNING" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SUDO_USER:-root}" "${PREV_SHA:-}" > "$PROVENANCE"
+printf 'sha=%s\nstatus=ok\nat=%s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LAST_ATTEMPT"
+echo
+echo "DEPLOYED $SHA ($RUNNING)"
