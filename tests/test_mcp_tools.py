@@ -442,6 +442,119 @@ async def test_propose_sst_edit_stages_in_manifest(project_with_manifest, monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "```\nMadison Symphony Orchestra, classical music\n```",
+        "`Madison Symphony Orchestra, classical music`",
+        "```Madison Symphony Orchestra, classical music",
+        "~~~\nMadison Symphony Orchestra, classical music\n~~~",
+        "​```\nMadison Symphony Orchestra\n```﻿",
+    ],
+    ids=["fenced-block", "inline-backticks", "leading-fence-only", "tilde-fence", "invisible-wrapped-fence"],
+)
+async def test_propose_sst_edit_rejects_code_fenced_value(project_with_manifest, monkeypatch, bad_value):
+    """A proposed value carrying a boundary code fence must be rejected (#380).
+
+    Pasted fences render invisibly in richText fields while corrupting the
+    first and last keywords — it happened twice to the same record.
+    """
+    from mcp_server.server import handle_propose_sst_edit
+
+    async def mock_search(media_id):
+        return {"record_id": "recTEST123", "keywords": "old, keywords"}
+
+    monkeypatch.setattr("mcp_server.server.search_sst_by_media_id", mock_search)
+
+    project_name, project_path = project_with_manifest
+    result = await handle_propose_sst_edit(
+        {
+            "media_id": project_name,
+            "field": "keywords",
+            "proposed_value": bad_value,
+            "reason": "SEO refresh",
+        }
+    )
+    assert "fence" in result[0].text.lower()
+
+    manifest = json.loads((project_path / "manifest.json").read_text())
+    assert "keywords" not in manifest.get("proposed_edits", {})
+
+
+@pytest.mark.asyncio
+async def test_propose_sst_edit_rejects_non_string_value(project_with_manifest, monkeypatch):
+    """A non-string proposed_value gets a clean error, not an AttributeError."""
+    from mcp_server.server import handle_propose_sst_edit
+
+    async def mock_search(media_id):
+        return {"record_id": "recTEST123"}
+
+    monkeypatch.setattr("mcp_server.server.search_sst_by_media_id", mock_search)
+
+    project_name, _ = project_with_manifest
+    result = await handle_propose_sst_edit(
+        {
+            "media_id": project_name,
+            "field": "keywords",
+            "proposed_value": ["a", "list", "of", "tags"],
+            "reason": "SEO refresh",
+        }
+    )
+    assert "must be a string" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_commit_sst_edits_blocks_fenced_staged_value(project_with_manifest, monkeypatch):
+    """Commit re-checks for fences: a manifest staged before the propose-time
+    guard (or hand-edited) must not write a fence to Airtable."""
+    from mcp_server.server import handle_commit_sst_edits, load_manifest, save_manifest
+
+    async def mock_fetch(record_id):
+        return {"keywords": "old, keywords"}
+
+    monkeypatch.setattr("mcp_server.server.fetch_sst_context", mock_fetch)
+
+    project_name, _ = project_with_manifest
+    manifest = load_manifest(project_name) or {"project_name": project_name}
+    manifest["proposed_edits"] = {
+        "keywords": {
+            "airtable_column": "General Keywords/Tags",
+            "current_value": "old, keywords",
+            "proposed_value": "```\nMadison Symphony Orchestra, classical music\n```",
+            "reason": "staged before the guard existed",
+            "record_id": "recTEST123",
+        }
+    }
+    save_manifest(project_name, manifest)
+
+    result = await handle_commit_sst_edits({"media_id": project_name})
+    assert "Commit blocked" in result[0].text
+    assert "fence" in result[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_propose_sst_edit_allows_interior_backticks(project_with_manifest, monkeypatch):
+    """Only leading/trailing backticks are paste artifacts; interior ones pass."""
+    from mcp_server.server import handle_propose_sst_edit
+
+    async def mock_search(media_id):
+        return {"record_id": "recTEST123", "long_description": "old"}
+
+    monkeypatch.setattr("mcp_server.server.search_sst_by_media_id", mock_search)
+
+    project_name, _ = project_with_manifest
+    result = await handle_propose_sst_edit(
+        {
+            "media_id": project_name,
+            "field": "long_description",
+            "proposed_value": "A look at the `pipeline` behind the music.",
+            "reason": "editorial",
+        }
+    )
+    assert "Proposed Edit" in result[0].text
+
+
+@pytest.mark.asyncio
 async def test_propose_sst_edit_rejects_disallowed_field(project_with_manifest, monkeypatch):
     """propose_sst_edit should reject fields not in the allowlist."""
     from mcp_server.server import handle_propose_sst_edit

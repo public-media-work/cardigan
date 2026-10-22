@@ -29,8 +29,8 @@ from api.services.secrets import bootstrap_secrets
 bootstrap_secrets()
 
 import json
-from pathlib import Path
 
+from api.services.config_path import resolve_config_path
 from api.services.database import close_db, init_db
 from api.services.llm import close_llm_client, get_llm_client
 from api.services.worker import JobWorker, WorkerConfig
@@ -38,7 +38,8 @@ from api.services.worker import JobWorker, WorkerConfig
 
 def load_worker_defaults() -> dict:
     """Load worker defaults from config file."""
-    config_path = Path("config/llm-config.json")
+    # Same file the API's Settings page writes — not the packaged default (#440).
+    config_path = resolve_config_path()
     if config_path.exists():
         with open(config_path) as f:
             config = json.load(f)

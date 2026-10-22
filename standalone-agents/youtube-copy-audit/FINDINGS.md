@@ -107,7 +107,105 @@ Sweep everything weekly; work the generation queue down slowly.
 
 | Date | Video ID | Title | Media ID derived? (where) | SST linked? | Captions (manual/auto/none) | Job | Written back? |
 |------|----------|-------|---------------------------|-------------|------------------------------|-----|----------------|
-| | | | | | | | |
+| 2026-09-02 | `qJ1eaJL-_BA` | June 21, 2024 \| Here & Now | n/a — repair path needs none | n/a | n/a — no transcript used | none | **yes, committed** |
+
+**First live write of this feature — the 0:00 repair path, not generation.** One line
+(`0:00 Episode intro`) prepended above an existing `1:10` marker; every other line
+byte-identical. Verified after the write: detector re-reports the video as `ok`
+(renders=True, 7 markers), `categoryId` and `defaultLanguage` preserved, mutation-log
+record present.
+
+**Chapter bar confirmed rendering on the live watch page** (human visual check,
+2026-09-02). The full loop is proven end to end: detect → plan → guarded write →
+re-detect → visible chapters. Note that the API cannot verify this last step —
+`videos.list` exposes nothing about whether chapters render, so a human or browser
+check remains the only confirmation.
+
+### Batch — 15 more repairs, 2026-09-02
+
+All 15 remaining missing-`0:00` videos written in one run: 14 Wisconsin Hometown
+Stories, Jerry Apps, Wisconsin Lighthouses. **15/15 committed, 0 failures**, ~750
+quota units. Re-verified afterwards: all 15 bucket `ok`, and an integrity check
+confirmed **exactly one line added and none lost** on every video.
+
+Remaining `broken` on the channel: 1 (Mile of Music — a 1-second segment between
+`0:07:55` and `0:07:56`, a real editorial call the tool correctly refuses).
+
+### GOTCHA — the key-path read lags a write
+
+Verifying immediately after a write produced a **false failure**: one video
+(`ns_7nlxi9f4`) reported `committed`, but a `videos.list` read seconds later still
+returned the OLD description, so the checker flagged it as unchanged and still
+`broken`. A re-read a few minutes on showed the write had landed correctly all along
+(one mutation-log entry, correct content).
+
+**Do not verify a write with an immediate key-path read.** The danger is not the
+false alarm itself — it is the reflex it invites: re-writing (harmless here, but
+double-inserting in a less idempotent tool) or rolling back a write that succeeded.
+Wait, or verify against the `videos.update` response, or accept eventual consistency
+and re-check on the next scheduled sweep.
+
+### Editorial follow-up — the doubled intro
+
+On **8 of the 15**, the added line now sits directly above the show's own opening
+chapter, reading:
+
+```
+0:00 Episode intro
+1:34 Intro
+```
+
+Both are defensible (a cold open, then the titles/introduction proper), but the
+wording is redundant. Nobody has watched 0:00–1:34 on those episodes to say what it
+actually is — cold open, underwriter credits, or teaser. `Episode intro` is
+house-style-correct but content-blind.
+
+This is a small instance of the general problem the review harness exists to solve:
+**a generated or inserted chapter label is a claim about content nobody has
+checked.**
+
+**Resolved 2026-09-03.** A human who knows the series identified what was actually
+there: a cold open followed by a titles sequence. Relabeled across all 8 to
+`0:00 Cold Open` / `1:34 Opening Titles`. Verified: 8/8 still `ok`, exactly two lines
+changed per video, nothing else touched.
+
+Required a new capability — `retitle_chapters()` in `description_blocks.py` plus
+`retitle.py` — because `plan_zero_marker_fix` sees a now-valid block and returns
+`None`. Renames are exact-title-matched and must hit exactly one chapter; zero
+matches (the description drifted) or several (ambiguous) both raise rather than edit
+the wrong line.
+
+**The transferable lesson for Stage 2:** the generic label was *syntactically*
+correct and *editorially* wrong, and only a person who knew the show could tell.
+Generation will produce this failure mode constantly and at a larger scale than a
+one-word intro label. It is the strongest argument yet for building the review
+harness before generating at volume.
+
+Also learned: **casing is per-series, not per-channel.** Hometown Stories is
+consistently Title Case, so the sentence-case `Episode intro` from `house-style` §8
+clashed visibly. See `youtube-chapters/reference/observed-conventions.md`.
+
+**This validates B4's write-back path in production before B4 exists.** The guarded
+executor (`write_ops.py`) handled a real description edit on the brand channel with
+the identity gate passing and `_merge_snippet` leaving unrelated fields alone.
+`description_blocks.py` is the reference implementation B4 should port rather than
+reinvent.
+
+### Escaping — checked, no problem, but worth knowing
+
+The `videos.update` **response** echoes `snippet.description` HTML-escaped (`Here
+&amp; Now`) even though the value sent contained a plain `&`. A re-read via
+`videos.list` confirms **storage is unescaped** — `&` stays `&`. So read-modify-write
+does **not** double-escape. Do not "fix" the response's entities by unescaping before
+a write; that would corrupt genuinely-escaped copy. Verify against a re-read, never
+against the write response.
+
+### Rollback
+
+`videos.update` responses and the mutation log record the **new** value only, so the
+log alone cannot restore a description. The repair tool keeps the original in its
+planning output; stage an explicit rollback op before any batch. Worth building into
+the tooling if this runs at volume.
 
 ## Media-ID ↔ video mapping
 

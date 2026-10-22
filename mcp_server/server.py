@@ -741,7 +741,13 @@ async def list_tools() -> list[Tool]:
                         ],
                         "description": "Which metadata field to edit",
                     },
-                    "proposed_value": {"type": "string", "description": "The new value for this field"},
+                    "proposed_value": {
+                        "type": "string",
+                        "description": "The new value for this field, as plain text. "
+                        "Values starting or ending with a code fence (backticks/tildes) "
+                        "are rejected — paste the inner text only (#380). For "
+                        "list-shaped fields, pass one comma-separated string.",
+                    },
                     "reason": {"type": "string", "description": "Why this change is being made (for audit trail)"},
                 },
                 "required": ["media_id", "field", "proposed_value", "reason"],
@@ -2035,6 +2041,33 @@ async def handle_list_revisions(arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(lines))]
 
 
+# Invisible characters rich-text paste can leave around a code fence:
+# zero-width space/joiner/non-joiner, BOM, word joiner.
+_INVISIBLE_PASTE_CHARS = "​‌‍﻿⁠"
+
+
+def _boundary_fence_error(value: str) -> str | None:
+    """Error message if a value starts or ends with a Markdown code fence.
+
+    A boundary backtick (or tilde fence) is a code fence that came along
+    with a copy/paste, not part of the value. In richText fields the fence
+    renders invisibly while corrupting the first and last terms of the
+    value (#380 — it happened twice to the same record). Interior backticks
+    are legitimate and pass. Checked at propose AND commit time, so a
+    manifest staged before this guard (or hand-edited) can't slip through.
+    """
+    stripped = value.strip().strip(_INVISIBLE_PASTE_CHARS).strip()
+    if stripped.startswith(("`", "~~~")) or stripped.endswith(("`", "~~~")):
+        return (
+            "Error: proposed_value starts or ends with a code fence (backticks or "
+            "tildes) — that fence was pasted along with the value, not part of it. "
+            "In richText fields the fence renders invisibly while corrupting the "
+            "first and last terms (#380). Strip the fence and propose the inner "
+            "text only."
+        )
+    return None
+
+
 async def handle_propose_sst_edit(arguments: dict) -> list[TextContent]:
     """Stage a proposed edit to an Airtable SST field."""
     media_id = arguments.get("media_id")
@@ -2049,6 +2082,18 @@ async def handle_propose_sst_edit(arguments: dict) -> list[TextContent]:
     if field not in WRITABLE_FIELDS:
         allowed = ", ".join(sorted(WRITABLE_FIELDS.keys()))
         return [TextContent(type="text", text=f"Error: Field '{field}' is not writable. Allowed fields: {allowed}")]
+
+    if not isinstance(proposed_value, str):
+        return [
+            TextContent(
+                type="text",
+                text=f"Error: proposed_value must be a string, got {type(proposed_value).__name__}. "
+                "For list-shaped fields (keywords, tags), pass one comma-separated string.",
+            )
+        ]
+
+    if _boundary_fence_error(proposed_value):
+        return [TextContent(type="text", text=_boundary_fence_error(proposed_value))]
 
     airtable_column, field_id, char_limit = WRITABLE_FIELDS[field]
 
@@ -2404,6 +2449,25 @@ async def handle_commit_sst_edits(arguments: dict) -> list[TextContent]:
                 text="**Commit blocked** — fields exceed character limits:\n"
                 + "\n".join(over_limit)
                 + "\n\nFix them with `propose_sst_edit` before committing.",
+            )
+        ]
+
+    # Re-check for boundary code fences at commit time too (mirrors the
+    # char-limit gate above): a manifest staged before the propose-time
+    # guard existed, or edited by hand, must not write a fence to Airtable.
+    fenced = []
+    for field_key, edit in proposed.items():
+        value = edit.get("proposed_value", "")
+        if isinstance(value, str) and _boundary_fence_error(value):
+            fenced.append(f"  {edit.get('airtable_column', field_key)}")
+    if fenced:
+        return [
+            TextContent(
+                type="text",
+                text="**Commit blocked** — staged values start or end with a code fence "
+                "(pasted backticks/tildes corrupt richText fields, #380):\n"
+                + "\n".join(fenced)
+                + "\n\nRe-stage the inner text with `propose_sst_edit` before committing.",
             )
         ]
 
