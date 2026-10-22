@@ -9,6 +9,9 @@
 # Usage:
 #   scripts/sync-native-secrets.sh <ssh-host>     # e.g. cardigan02 (must log in as root)
 #
+# Also writes /etc/nginx/cardigan-preview.htpasswd from CARDIGAN_WEB_HTPASSWD
+# (optional) for the public preview vhost, or removes it if unresolved (#485).
+#
 # It does not restart anything. To pick up new values, run cardigan-deploy
 # (which refuses while jobs are in progress), or restart cardigan-api and
 # cardigan-worker by hand after checking the queue is empty.
@@ -53,3 +56,23 @@ printf '%s' "$body" | ssh "$HOST" 'sh -c "umask 027; cat > /etc/cardigan/secrets
   && chmod 0640 /etc/cardigan/secrets.env.new \
   && mv /etc/cardigan/secrets.env.new /etc/cardigan/secrets.env"'
 echo "Wrote /etc/cardigan/secrets.env on $HOST (not restarted: run cardigan-deploy, or restart by hand after checking the queue)"
+
+# Public preview vhost (:3101, #485). CARDIGAN_WEB_HTPASSWD is one "user:hash"
+# line per editor (as for the Docker image). Fail closed: if it doesn't
+# resolve, the htpasswd is REMOVED, so the next cardigan-deploy turns the
+# preview vhost off rather than leaving a stale wall on a public surface.
+HTPASSWD_PATH=/etc/nginx/cardigan-preview.htpasswd
+htpasswd=$(get-secret.sh CARDIGAN_WEB_HTPASSWD 2>/dev/null || true)
+if [[ -n "$htpasswd" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[^:[:space:]]+:[^[:space:]]+$ ]] \
+      || { echo "CARDIGAN_WEB_HTPASSWD has a line that isn't user:hash; htpasswd not written" >&2; exit 2; }
+  done <<< "$htpasswd"
+  printf '%s\n' "$htpasswd" | ssh "$HOST" "sh -c 'umask 027; cat > $HTPASSWD_PATH.new \
+    && chown root:www-data $HTPASSWD_PATH.new && chmod 0640 $HTPASSWD_PATH.new \
+    && mv $HTPASSWD_PATH.new $HTPASSWD_PATH'"
+  echo "Wrote $HTPASSWD_PATH on $HOST ($(grep -c . <<< "$htpasswd") user(s)); preview vhost turns on at the next cardigan-deploy"
+else
+  ssh "$HOST" "rm -f $HTPASSWD_PATH"
+  echo "CARDIGAN_WEB_HTPASSWD not resolved: removed $HTPASSWD_PATH on $HOST; preview vhost turns off at the next cardigan-deploy"
+fi
