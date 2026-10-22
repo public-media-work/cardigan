@@ -8,6 +8,18 @@ findings write-up. These are evidence for bug reports, not fixtures for the test
 |---|---|---|
 | `2026-09-24-6POL0213-manual-supervisor/` | Inside Wisconsin Politics 6POL0213 driven through all five phases by a supervisor agent against `origin/main` e142891 (prod's revision), with OpenRouter replays of the formatter on Sonnet 5. Found why prod jobs pause and what unblocks them. | `FINDINGS-6POL0213.md`, then `RUNLOG.md` |
 
+## Running a new one
+
+Use the `/test-run` skill (`.claude/skills/test-run/SKILL.md`). It drives
+`test-runs/harness.py`, a single reusable harness (`python test-runs/harness.py --help`). The harness
+captures prompts from the worker's own `_run_phase`, builds SST context through the worker's own
+`_fetch_sst_context` (`sst --live` reads the record from Airtable, read-only), prints a standard
+subagent brief per phase, and runs prod's gates plus a timestamp gate. The skill also documents a
+full local worker run (real API and worker against a throwaway DB) for testing a deployment or
+worker change end to end. New runs live in the gitignored `OUTPUT/supervised-runs/`. Their data goes to the
+private `internal-production-data` repo, never here. The per-run `harness.py` copies in older run
+folders are kept as they were run.
+
 ## Job archives live in the private data repo
 
 Full job exports (transcripts, phase outputs, review notes, Airtable ids) are **not** kept in
