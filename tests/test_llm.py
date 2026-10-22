@@ -164,6 +164,134 @@ def test_packaged_openrouter_backends_all_set_max_tokens():
     assert not uncapped, f"OpenRouter backends without max_tokens fall back to 4096: {uncapped}"
 
 
+MANDATORY_CAPS = {"mandatory": True, "supported_efforts": ["max", "xhigh", "high", "medium", "low"]}
+OPTIONAL_CAPS = {"mandatory": False, "supported_efforts": ["max", "high", "medium", "low", "none"]}
+
+
+def _openrouter_client():
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+    client.config = {}
+    return client
+
+
+async def _send_reasoning_off(client, model="anthropic/claude-sonnet-5.5"):
+    return await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+        reasoning={"enabled": False},
+    )
+
+
+async def test_reasoning_off_becomes_lowest_effort_on_mandatory_model(monkeypatch):
+    """Sonnet 5.5 rejects ``enabled: false`` with HTTP 400; send its weakest effort (#465)."""
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=MANDATORY_CAPS))
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await _send_reasoning_off(client)
+
+    assert captured["payload"]["reasoning"] == {"effort": "low"}
+
+
+async def test_reasoning_off_kept_on_optional_model(monkeypatch):
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=OPTIONAL_CAPS))
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await _send_reasoning_off(client, model="anthropic/claude-sonnet-4.6")
+
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+
+
+async def test_reasoning_off_kept_when_catalog_unknown(monkeypatch):
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=None))
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await _send_reasoning_off(client)
+
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+
+
+class FakeResp400ReasoningMandatory:
+    status_code = 400
+    text = '{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}'
+
+    def json(self):
+        return {"error": {"message": "Reasoning is mandatory for this endpoint and cannot be disabled.", "code": 400}}
+
+    def raise_for_status(self):
+        raise AssertionError("the 400 should have been retried, not raised")
+
+
+async def test_mandatory_reasoning_400_retries_once_at_low_effort(monkeypatch):
+    """Catalog couldn't say, the provider refused reasoning-off: retry at low effort."""
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=None))
+    client = _openrouter_client()
+    sent = []
+
+    async def _post(endpoint, headers, payload):
+        sent.append(dict(payload))
+        return FakeResp400ReasoningMandatory() if len(sent) == 1 else FakeRespOK()
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    resp = await _send_reasoning_off(client)
+
+    assert [p["reasoning"] for p in sent] == [{"enabled": False}, {"effort": "low"}]
+    assert resp.content == "hello"
+
+
+async def test_no_reasoning_lookup_without_reasoning_off(monkeypatch):
+    """Calls that don't ask for reasoning off never touch the catalog."""
+    from api.services import model_roster
+
+    caps = AsyncMock(return_value=MANDATORY_CAPS)
+    monkeypatch.setattr(model_roster, "reasoning_caps", caps)
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5.5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+    )
+
+    caps.assert_not_awaited()
+    assert "reasoning" not in captured["payload"]
+
+
+async def test_reasoning_reserve_only_for_mandatory_models(monkeypatch):
+    from api.services import model_roster
+
+    client = _openrouter_client()
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=MANDATORY_CAPS))
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-5.5") == 8000
+    client.config = {"routing": {"reasoning": {"reserve_tokens": 6000}}}
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-5.5") == 6000
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=OPTIONAL_CAPS))
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-4.6") == 0
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=None))
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-5.5") == 0
+
+
 async def test_call_openrouter_raises_on_length_finish_reason(monkeypatch):
     """A provider-side length cutoff must fail the phase, not return success (#403).
 

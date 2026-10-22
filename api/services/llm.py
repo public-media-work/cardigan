@@ -54,6 +54,23 @@ MALFORMED_BODY_PREFIX_CHARS = 300
 # Matches the OpenAI-compatible path's long-standing default.
 DEFAULT_MAX_TOKENS = 4096
 
+# OpenRouter's HTTP 400 text when a model refuses ``reasoning: {enabled: false}``
+# (seen on anthropic/claude-sonnet-5.5, #465). Lower-cased for matching.
+REASONING_MANDATORY_MARKER = "reasoning is mandatory"
+
+# Output tokens held back for reasoning on mandatory-reasoning models when sizing
+# chunks (#465: 7.6k-7.9k measured on Sonnet 5.5). Overridable in config.
+DEFAULT_REASONING_RESERVE = 8000
+
+# Upper bound on any single HTTP call; per-backend ``timeout`` values sit below it.
+HTTP_TIMEOUT_CEILING_S = 600.0
+
+
+def _reasoning_off_requested(payload: Dict[str, Any]) -> bool:
+    """True when the caller asked OpenRouter to switch reasoning off."""
+    reasoning = payload.get("reasoning")
+    return isinstance(reasoning, dict) and reasoning.get("enabled") is False
+
 
 class CostCapExceededError(Exception):
     """Raised when a request would exceed the run cost cap."""
@@ -689,7 +706,11 @@ class LLMClient:
                     await self._http_client.aclose()
                 except Exception:
                     pass  # Already broken, ignore
-            self._http_client = httpx.AsyncClient(timeout=180.0)
+            # A ceiling, not the limit: the worker enforces each backend's own
+            # ``timeout`` per call. At 180 s this capped every non-streamed
+            # completion, so a long formatter call (32k max_tokens with reasoning)
+            # read-timed-out regardless of its backend setting (#465).
+            self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT_CEILING_S, connect=15.0))
         return self._http_client
 
     async def close(self) -> None:
@@ -715,6 +736,23 @@ class LLMClient:
             raise ValueError(f"Unknown backend: {backend_name}")
 
         return backends[backend_name]
+
+    async def reasoning_reserve(self, model: Optional[str]) -> int:
+        """Output tokens to hold back for reasoning that can't be switched off.
+
+        A mandatory-reasoning model spends part of ``max_tokens`` thinking even
+        when the phase asks for reasoning off (#465 measured 7.6k-7.9k on
+        Sonnet 5.5, regardless of chunk size), so an output budget sized on the
+        full cap under-chunks. 0 for every other model, or if the catalog can't
+        say. Configurable as ``routing.reasoning.reserve_tokens``.
+        """
+        from api.services import model_roster
+
+        caps = await model_roster.reasoning_caps(model)
+        if not (caps and caps.get("mandatory")):
+            return 0
+        reserve = self.config.get("routing", {}).get("reasoning", {}).get("reserve_tokens", DEFAULT_REASONING_RESERVE)
+        return int(reserve)
 
     def get_backend_for_phase(self, phase: str) -> str:
         """Get the configured backend name for a phase.
@@ -967,7 +1005,28 @@ class LLMClient:
         # mid-transcript (#403). Precedence: explicit kwarg > backend config > 4096.
         payload["max_tokens"] = payload.get("max_tokens") or config.get("max_tokens", DEFAULT_MAX_TOKENS)
 
+        # A phase asks for reasoning OFF as intent; translate it for the model
+        # actually being called. Models whose reasoning is mandatory reject
+        # ``enabled: false`` with HTTP 400, so they get their weakest effort (#465).
+        if _reasoning_off_requested(payload):
+            from api.services import model_roster
+
+            caps = await model_roster.reasoning_caps(model)
+            if caps and caps.get("mandatory"):
+                payload["reasoning"] = {"effort": model_roster.lowest_reasoning_effort(caps) or "low"}
+
         response = await self._post_openrouter(config["endpoint"], headers, payload)
+
+        # The catalog was unreachable or didn't list the model, and it turned out
+        # to be mandatory-reasoning: retry once at low effort rather than fail.
+        if (
+            response.status_code == 400
+            and _reasoning_off_requested(payload)
+            and REASONING_MANDATORY_MARKER in (response.text or "").lower()
+        ):
+            logger.warning("Reasoning is mandatory for %s; retrying at low effort", model)
+            payload["reasoning"] = {"effort": "low"}
+            response = await self._post_openrouter(config["endpoint"], headers, payload)
 
         # Log error details before raising
         if response.status_code >= 400:
