@@ -187,7 +187,11 @@ class Item(BaseModel):
     alternatives: List[ItemAlternative] = Field(
         default_factory=list, description="Other candidates; choosing one copies it into edited_value"
     )
-    char_limit: Optional[int] = Field(None, description="From config/house_style.yaml")
+    char_limit: Optional[int] = Field(
+        None,
+        description="From config/house_style.yaml. For the title it applies to the part before "
+        "(or, for Wisconsin Life, after) the program name",
+    )
 
     generator: Optional[str] = None
     model: Optional[str] = None

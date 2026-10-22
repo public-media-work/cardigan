@@ -27,6 +27,7 @@ from api.services.items import (
     derive_current_state,
     normalize_sst_record,
     premiere_date_proposals,
+    split_title,
 )
 from api.services.legacy_item_adapter import extract_legacy_proposals
 
@@ -429,7 +430,10 @@ class TestAlternatives:
 
         assert [alt["angle"] for alt in alternatives] == ["place", "question"]
         assert alternatives[0]["flags"] == []
-        assert [(f["check"], f["target"]) for f in alternatives[1]["flags"]] == [("char_limit", "alternative")]
+        assert [(f["rule_id"], f["target"]) for f in alternatives[1]["flags"]] == [
+            ("char_limit.max", "alternative"),
+            ("char_limit.full_max", "alternative"),
+        ]
 
     def test_no_alternatives_unless_the_item_was_produced(self):
         proposals = {
@@ -450,6 +454,46 @@ class TestAlternatives:
         row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(title="Kept")))["title"]
 
         assert [alt["value"] for alt in row["alternatives"]] == ["A"]
+
+
+class TestTitleLimits:
+    """Ruling on #459: 80 for the title part, 100 for the whole string."""
+
+    def flags(self, title):
+        proposals = {"title": Proposal(value=title, origin=Origin.inferred, generator="g")}
+        return [f["rule_id"] for f in by_key(build_items(job_id=1, proposals=proposals))["title"]["flags"]]
+
+    def test_split_appended_program(self):
+        assert split_title("Track records | Inside Wisconsin Politics") == (
+            "Track records",
+            "Inside Wisconsin Politics",
+        )
+
+    def test_split_prepended_program(self):
+        assert split_title("Wisconsin Life | Grizz Works") == ("Grizz Works", "Wisconsin Life")
+
+    def test_split_without_program(self):
+        assert split_title("Episode intro") == ("Episode intro", None)
+
+    def test_program_name_does_not_count_toward_80(self):
+        # The #459 case: 88 characters in full, 60 before the program name.
+        title = "What are the track records of Tom Tiffany and David Crowley? | Inside Wisconsin Politics"
+        assert len(title) == 88
+        assert self.flags(title) == []
+
+    def test_title_part_over_80_is_flagged(self):
+        assert self.flags("x" * 81 + " | Here & Now") == ["char_limit.max"]
+
+    def test_wisconsin_life_part_is_measured_after_the_prefix(self):
+        assert self.flags("Wisconsin Life | " + "x" * 80) == []
+        assert self.flags("Wisconsin Life | " + "x" * 81) == ["char_limit.max"]
+
+    def test_whole_string_over_100_is_flagged(self):
+        assert self.flags("x" * 75 + " | " + "y" * 30) == ["char_limit.full_max"]
+
+    def test_char_limit_column_is_the_title_part_limit(self):
+        proposals = {"title": Proposal(value="T", origin=Origin.inferred, generator="g")}
+        assert by_key(build_items(job_id=1, proposals=proposals))["title"]["char_limit"] == 80
 
 
 class TestShippedConfigGate:

@@ -62,6 +62,12 @@ LADDER_REVIEWED = frozenset(
 )
 LADDER_FLAGGED = "Producer Issue - See Promo Notes"
 
+# Release Title convention (ruling on #459, 2026-10-22): the program name is
+# appended — "Title | Program" — except for these programs, which prepend it
+# for analytics scripting.
+TITLE_SEPARATOR = " | "
+PREFIX_PROGRAMS: tuple[str, ...] = ("Wisconsin Life",)
+
 # Why an item is unavailable, when the reason is structural rather than per-job.
 COPY_GENERATION_OFF = "copy_generation_off"
 NOT_GENERATED = "not_generated"
@@ -419,32 +425,81 @@ def premiere_date_proposals(sst_context: Optional[Mapping[str, Any]]) -> dict[st
 # ---------------------------------------------------------------------------
 
 
-def _char_limit(limit_key: Optional[str], limits: Mapping[str, Any]) -> Optional[int]:
-    """Look up a field's max length from house_style limits, if it has one."""
+def split_title(title: str) -> tuple[str, Optional[str]]:
+    """Split a Release Title into (title part, program name or None).
+
+    "Wisconsin Life | Title" -> ("Title", "Wisconsin Life");
+    "Title | Program" -> ("Title", "Program"); no separator -> (title, None).
+    """
+    for program in PREFIX_PROGRAMS:
+        prefix = program + TITLE_SEPARATOR
+        if title.startswith(prefix):
+            return title[len(prefix) :], program
+    if TITLE_SEPARATOR in title:
+        part, program = title.rsplit(TITLE_SEPARATOR, 1)
+        return part, program
+    return title, None
+
+
+@dataclass(frozen=True)
+class CharLimit:
+    """A field's house-style limits. For the title, ``max`` applies to the
+    title part and ``full_max`` to the whole string (#459)."""
+
+    max: Optional[int] = None
+    full_max: Optional[int] = None
+
+
+def _char_limit(limit_key: Optional[str], limits: Mapping[str, Any]) -> CharLimit:
+    """Look up a field's length limits from house_style, if it has any."""
     if not limit_key:
-        return None
+        return CharLimit()
     entry = limits.get(limit_key) or {}
-    maximum = entry.get("max")
-    return maximum if isinstance(maximum, int) else None
+    maximum, full = entry.get("max"), entry.get("full_max")
+    return CharLimit(
+        max=maximum if isinstance(maximum, int) else None,
+        full_max=full if isinstance(full, int) else None,
+    )
+
+
+def _limit_flag(rule_id: str, message: str, target: FlagTarget) -> dict[str, Any]:
+    return {
+        "check": "char_limit",
+        "rule_id": rule_id,
+        "severity": "error",
+        "message": message,
+        "model_fixable": target != FlagTarget.basis,
+        "origin": FlagOrigin.code.value,
+        "target": target.value,
+    }
 
 
 def _char_limit_flags(
-    value: Optional[str], limit: Optional[int], target: FlagTarget = FlagTarget.proposal
+    value: Optional[str],
+    limit: CharLimit,
+    target: FlagTarget = FlagTarget.proposal,
+    *,
+    key: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Advisory flag when a value runs past its house-style limit."""
-    if value is None or limit is None or len(value) <= limit:
+    """Advisory flags when a value runs past its house-style limits.
+
+    A title is measured without its program name against ``max``, and whole
+    against ``full_max``.
+    """
+    if value is None:
         return []
-    return [
-        {
-            "check": "char_limit",
-            "rule_id": "char_limit.max",
-            "severity": "error",
-            "message": f"{len(value)} characters; the limit is {limit}",
-            "model_fixable": target != FlagTarget.basis,
-            "origin": FlagOrigin.code.value,
-            "target": target.value,
-        }
-    ]
+    flags: list[dict[str, Any]] = []
+    measured, program = split_title(value) if key == "title" else (value, None)
+    if limit.max is not None and len(measured) > limit.max:
+        what = "characters before the program name" if program else "characters"
+        flags.append(_limit_flag("char_limit.max", f"{len(measured)} {what}; the limit is {limit.max}", target))
+    if limit.full_max is not None and len(value) > limit.full_max:
+        flags.append(
+            _limit_flag(
+                "char_limit.full_max", f"{len(value)} characters in full; the limit is {limit.full_max}", target
+            )
+        )
+    return flags
 
 
 def _model_flags(flags: tuple[Mapping[str, Any], ...], default_target: FlagTarget) -> list[dict[str, Any]]:
@@ -455,14 +510,14 @@ def _model_flags(flags: tuple[Mapping[str, Any], ...], default_target: FlagTarge
     ]
 
 
-def _alternatives(candidates: tuple[Candidate, ...], limit: Optional[int]) -> list[dict[str, Any]]:
+def _alternatives(candidates: tuple[Candidate, ...], limit: CharLimit, key: str) -> list[dict[str, Any]]:
     """Alternatives with code-measured limit flags beside the model's own."""
     return [
         {
             "value": candidate.value,
             "angle": candidate.angle,
             "flags": _model_flags(candidate.flags, FlagTarget.alternative)
-            + _char_limit_flags(candidate.value, limit, FlagTarget.alternative),
+            + _char_limit_flags(candidate.value, limit, FlagTarget.alternative, key=key),
         }
         for candidate in candidates
     ]
@@ -539,10 +594,10 @@ def build_items(
 
         produced = state == GenerationState.ready
 
-        flags = _char_limit_flags(proposed_value, char_limit)
+        flags = _char_limit_flags(proposed_value, char_limit, key=spec.key)
         if affirmed:
             # The editor keeps the basis, so its measurements are the ones that matter.
-            flags += _char_limit_flags(basis_value, char_limit, FlagTarget.basis)
+            flags += _char_limit_flags(basis_value, char_limit, FlagTarget.basis, key=spec.key)
         if produced:
             default_target = FlagTarget.basis if affirmed else FlagTarget.proposal
             flags = _model_flags(proposal.flags, default_target) + flags
@@ -561,8 +616,8 @@ def build_items(
                 "proposed_value": proposed_value,
                 "rationale": proposal.rationale if produced else None,
                 "flags": flags,
-                "alternatives": _alternatives(proposal.alternatives, char_limit) if produced else [],
-                "char_limit": char_limit,
+                "alternatives": _alternatives(proposal.alternatives, char_limit, spec.key) if produced else [],
+                "char_limit": char_limit.max,
                 "generator": proposal.generator if proposal else None,
                 "model": proposal.model if proposal else None,
                 "input_tokens": proposal.input_tokens if produced else None,
