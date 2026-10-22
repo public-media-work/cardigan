@@ -141,7 +141,7 @@
     {
       "key": "social_description",
       "category": "copy",
-      "airtable_field": "Social Media Description",
+      "airtable_field": "Social Media Description or Producer Draft",
       "airtable_field_id": "fldntHlzk6PfIT5k2",
       "writable": true,
       "limit": null,
