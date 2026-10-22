@@ -18,6 +18,29 @@ timestamp gate. New runs live in the gitignored `OUTPUT/supervised-runs/`. Their
 private `internal-production-data` repo, never here. The per-run `harness.py` copies in older run
 folders are kept as they were run.
 
+## Job archives live in the private data repo
+
+Full job exports (transcripts, phase outputs, review notes, Airtable ids) are **not** kept in
+this public repo. They go to the private `public-media-work/internal-production-data` repo
+under `cardigan/<date>-<cohort>/`, produced with `export_jobs.py` here:
+
+```bash
+python test-runs/export_jobs.py --out ../internal-production-data/cardigan/<date>-<cohort> [--status paused failed]
+```
+
+Each export is one folder per job (`job.json` = the full API row incl. per-phase
+model/cost/tokens, `validation_result`, `error_message`; plus every artifact the outputs
+endpoint serves) and an `index.csv` / `index.json` with the fields worth charting. Source
+transcripts are not served by the API; `transcript_file` in the index names them.
+
+First cohort: `cardigan/2026-09-24-all-jobs/` — all 48 jobs on `cardigan01` as of
+2026-09-24 (15 completed · 4 failed · 29 paused), exported before the paused/failed rows were
+deleted from the app. Mark's ruling: performance data only; the episodes already published.
+
+**Do not commit `test-runs/archive/` here.** This repo is public. A single hand-vetted sample
+run (like the one above) is fine; bulk exports, anything not read line by line, and anything
+that accumulates automatically belong in the private repo.
+
 ## Layout of a run folder
 
 - `FINDINGS-*.md` — defects with IDs, severity, fix location, hotfix vs v-next tier.
