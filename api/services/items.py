@@ -26,7 +26,10 @@ from datetime import date, datetime
 from typing import Any, Mapping, Optional
 
 from api.models.item import (
+    NO_CHANGE_NEEDED,
     CurrentState,
+    FlagOrigin,
+    FlagTarget,
     GenerationState,
     ItemCategory,
     Origin,
@@ -63,6 +66,8 @@ LADDER_FLAGGED = "Producer Issue - See Promo Notes"
 COPY_GENERATION_OFF = "copy_generation_off"
 NOT_GENERATED = "not_generated"
 NO_VALUE_EXTRACTED = "no_value_extracted"
+# A generator affirmed an item that has no basis — there was nothing to keep.
+AFFIRM_WITHOUT_BASIS = "affirm_without_basis"
 
 
 @dataclass(frozen=True)
@@ -83,12 +88,32 @@ class ItemSpec:
 
 
 @dataclass(frozen=True)
+class Candidate:
+    """An alternative value a generator offers beside its proposal.
+
+    ``flags`` are the generator's own findings about this candidate; code
+    stamps them ``origin=model`` and adds its own measurements.
+    """
+
+    value: str
+    angle: Optional[str] = None
+    flags: tuple[Mapping[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
 class Proposal:
     """One generator's answer for one item.
 
     ``value=None`` with a ``missing_reason`` means the generator ran and could
     not produce a value; ``missing_state`` says whether that's a failure or a
     missing input.
+
+    ``affirm=True`` means the generator read the basis and judged it right as
+    written ("no change needed"). ``value`` is ignored. It is only a valid
+    answer when the item has a basis; without one it reads as ``failed``.
+
+    ``flags`` are the generator's findings (stamped ``origin=model``); each
+    may set ``target`` to ``basis`` when it is about the existing copy.
     """
 
     value: Optional[str]
@@ -101,6 +126,9 @@ class Proposal:
     cost_usd: Optional[float] = None
     missing_reason: Optional[str] = None
     missing_state: GenerationState = GenerationState.failed
+    affirm: bool = False
+    alternatives: tuple[Candidate, ...] = ()
+    flags: tuple[Mapping[str, Any], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +428,9 @@ def _char_limit(limit_key: Optional[str], limits: Mapping[str, Any]) -> Optional
     return maximum if isinstance(maximum, int) else None
 
 
-def _char_limit_flags(value: Optional[str], limit: Optional[int]) -> list[dict[str, Any]]:
+def _char_limit_flags(
+    value: Optional[str], limit: Optional[int], target: FlagTarget = FlagTarget.proposal
+) -> list[dict[str, Any]]:
     """Advisory flag when a value runs past its house-style limit."""
     if value is None or limit is None or len(value) <= limit:
         return []
@@ -410,8 +440,31 @@ def _char_limit_flags(value: Optional[str], limit: Optional[int]) -> list[dict[s
             "rule_id": "char_limit.max",
             "severity": "error",
             "message": f"{len(value)} characters; the limit is {limit}",
-            "model_fixable": True,
+            "model_fixable": target != FlagTarget.basis,
+            "origin": FlagOrigin.code.value,
+            "target": target.value,
         }
+    ]
+
+
+def _model_flags(flags: tuple[Mapping[str, Any], ...], default_target: FlagTarget) -> list[dict[str, Any]]:
+    """Stamp a generator's own findings as model-raised. Origin is not the
+    generator's to claim; target defaults to what the flag came attached to."""
+    return [
+        {**flag, "origin": FlagOrigin.model.value, "target": flag.get("target", default_target.value)} for flag in flags
+    ]
+
+
+def _alternatives(candidates: tuple[Candidate, ...], limit: Optional[int]) -> list[dict[str, Any]]:
+    """Alternatives with code-measured limit flags beside the model's own."""
+    return [
+        {
+            "value": candidate.value,
+            "angle": candidate.angle,
+            "flags": _model_flags(candidate.flags, FlagTarget.alternative)
+            + _char_limit_flags(candidate.value, limit, FlagTarget.alternative),
+        }
+        for candidate in candidates
     ]
 
 
@@ -465,12 +518,19 @@ def build_items(
         proposed_value: Optional[str] = None
         reason: Optional[str] = None
 
+        affirmed = False
+
         if spec.unavailable_reason:
             state, reason = GenerationState.unavailable, spec.unavailable_reason
         elif spec.category == ItemCategory.copy and not copy_generation:
             state, reason = GenerationState.unavailable, COPY_GENERATION_OFF
         elif proposal is None:
             state, reason = GenerationState.unavailable, NOT_GENERATED
+        elif proposal.affirm:
+            if basis_value is not None:
+                state, reason, affirmed = GenerationState.ready, NO_CHANGE_NEEDED, True
+            else:
+                state, reason = GenerationState.failed, AFFIRM_WITHOUT_BASIS
         elif proposal.value is None:
             state = proposal.missing_state
             reason = proposal.missing_reason or NO_VALUE_EXTRACTED
@@ -478,6 +538,14 @@ def build_items(
             state, proposed_value = GenerationState.ready, proposal.value
 
         produced = state == GenerationState.ready
+
+        flags = _char_limit_flags(proposed_value, char_limit)
+        if affirmed:
+            # The editor keeps the basis, so its measurements are the ones that matter.
+            flags += _char_limit_flags(basis_value, char_limit, FlagTarget.basis)
+        if produced:
+            default_target = FlagTarget.basis if affirmed else FlagTarget.proposal
+            flags = _model_flags(proposal.flags, default_target) + flags
         rows.append(
             {
                 "job_id": job_id,
@@ -492,7 +560,8 @@ def build_items(
                 "current_state": current_state.value,
                 "proposed_value": proposed_value,
                 "rationale": proposal.rationale if produced else None,
-                "flags": _char_limit_flags(proposed_value, char_limit),
+                "flags": flags,
+                "alternatives": _alternatives(proposal.alternatives, char_limit) if produced else [],
                 "char_limit": char_limit,
                 "generator": proposal.generator if proposal else None,
                 "model": proposal.model if proposal else None,

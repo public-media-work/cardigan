@@ -19,7 +19,15 @@ from api.services.database import (
     update_job_item,
     upsert_job_items,
 )
-from api.services.items import ITEM_SPECS, LARGE_VALUE_CHARS, SPECS_BY_KEY, SST_FIELD_IDS, build_items
+from api.services.items import (
+    ITEM_SPECS,
+    LARGE_VALUE_CHARS,
+    SPECS_BY_KEY,
+    SST_FIELD_IDS,
+    Candidate,
+    Proposal,
+    build_items,
+)
 from api.services.legacy_item_adapter import extract_legacy_proposals
 
 
@@ -233,6 +241,57 @@ async def test_basis_round_trips(job):
     assert item.basis_value == "Existing copy."
     assert item.is_suggestion()
     assert item.basis_fetched_at is not None
+
+
+@pytest.mark.asyncio
+async def test_affirmation_round_trips_and_its_value_is_the_basis(job):
+    context = {field_id: None for field_id in SST_FIELD_IDS}
+    context[SPECS_BY_KEY["short_description"].sst_field_id] = "Existing copy."
+    context["record_id"] = "recTEST"
+    proposals = {"short_description": Proposal(value=None, origin=Origin.inferred, generator="g", affirm=True)}
+
+    await upsert_job_items(job.id, build_items(job_id=job.id, proposals=proposals, sst_context=context))
+
+    item = await get_job_item(job.id, "short_description")
+    assert item.is_affirmation()
+    assert item.proposed_value is None
+    assert item.value == "Existing copy."
+
+    await update_job_item(job.id, "short_description", ItemUpdate(edited_value="Hand edit."))
+    item = await get_job_item(job.id, "short_description")
+    assert item.value == "Hand edit."
+
+
+@pytest.mark.asyncio
+async def test_alternatives_and_flag_provenance_round_trip(job):
+    proposals = {
+        "title": Proposal(
+            value="z" * 100,
+            origin=Origin.inferred,
+            generator="g",
+            alternatives=(Candidate("Shorter title", angle="place"),),
+        )
+    }
+
+    await upsert_job_items(job.id, build_items(job_id=job.id, proposals=proposals))
+
+    item = await get_job_item(job.id, "title")
+    assert [(alt.value, alt.angle, alt.length) for alt in item.alternatives] == [("Shorter title", "place", 13)]
+    assert [(flag.origin.value, flag.target.value) for flag in item.flags] == [("code", "proposal")]
+    assert item.model_dump()["alternatives"][0]["length"] == 13
+
+
+@pytest.mark.asyncio
+async def test_flags_written_before_provenance_still_read(job):
+    """Rows without origin/target default to a code flag on the proposal."""
+    rows = rows_for(job.id)
+    for row in rows:
+        if row["key"] == "title":
+            row["flags"] = [{"check": "char_limit", "rule_id": "r", "severity": "error", "message": "m"}]
+    await upsert_job_items(job.id, rows)
+
+    flag = (await get_job_item(job.id, "title")).flags[0]
+    assert (flag.origin.value, flag.target.value) == ("code", "proposal")
 
 
 @pytest.mark.asyncio

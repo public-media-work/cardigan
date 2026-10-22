@@ -75,7 +75,7 @@ def get_app_version() -> str:
 
 from api.models.config import ConfigItem, ConfigValueType
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
-from api.models.item import Item, ItemFlag, ItemUpdate
+from api.models.item import Item, ItemAlternative, ItemFlag, ItemUpdate
 from api.models.job import Job, JobCreate, JobOutputs, JobPhase, JobStatus, JobUpdate, PhaseStatus
 
 
@@ -228,6 +228,7 @@ job_items_table = Table(
     Column("edited_value", Text, nullable=True),
     Column("rationale", Text, nullable=True),
     Column("flags", Text, nullable=True),  # JSON array of ItemFlag
+    Column("alternatives", Text, nullable=True),  # JSON array of ItemAlternative
     Column("char_limit", Integer, nullable=True),
     Column("generator", Text, nullable=True),
     Column("model", Text, nullable=True),
@@ -1585,9 +1586,10 @@ async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
             payload["job_id"] = job_id
             payload["updated_at"] = now
 
-            flags = payload.get("flags")
-            if isinstance(flags, list):
-                payload["flags"] = json.dumps(flags) if flags else None
+            for column in ("flags", "alternatives"):
+                blob = payload.get(column)
+                if isinstance(blob, list):
+                    payload[column] = json.dumps(blob) if blob else None
 
             key = payload["key"]
             if key in existing:
@@ -1695,6 +1697,14 @@ def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
             # flags are advisory and never gate anything.
             flags = []
 
+    alternatives: List[ItemAlternative] = []
+    if row.alternatives:
+        try:
+            alternatives = [ItemAlternative(**alt) for alt in json.loads(row.alternatives)]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # Same rule as flags: the proposal must stay readable.
+            alternatives = []
+
     def _maybe(value: Optional[str]) -> Optional[str]:
         if not include_values and value is not None and len(value) > large:
             return None
@@ -1716,6 +1726,7 @@ def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
         edited_value=_maybe(row.edited_value),
         rationale=row.rationale,
         flags=flags,
+        alternatives=alternatives,
         char_limit=row.char_limit,
         generator=row.generator,
         model=row.model,

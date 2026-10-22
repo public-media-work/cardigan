@@ -9,8 +9,9 @@ extractor keys on it.
 import json
 from pathlib import Path
 
-from api.models.item import CurrentState, GenerationState, ItemCategory, Origin
+from api.models.item import NO_CHANGE_NEEDED, CurrentState, GenerationState, ItemCategory, Origin
 from api.services.items import (
+    AFFIRM_WITHOUT_BASIS,
     COPY_GENERATION_OFF,
     DETERMINISTIC_DATE_KEYS,
     ITEM_SPECS,
@@ -20,6 +21,7 @@ from api.services.items import (
     SST_FIELD_IDS,
     SST_PREMIERE_FIELD_ID,
     SST_STATUS_FIELD_ID,
+    Candidate,
     Proposal,
     build_items,
     derive_current_state,
@@ -341,6 +343,113 @@ class TestBuildItems:
         """Hand edits belong to the editor; assembly never writes one."""
         rows = build_items(job_id=1, proposals=legacy(seo_md=SEO_MD))
         assert all("edited_value" not in row for row in rows)
+
+
+class TestAffirmation:
+    """A generator can answer "no change needed" — distinct from not generating."""
+
+    def test_affirming_a_basis_is_ready_with_no_proposal(self):
+        proposals = {"short_description": Proposal(value=None, origin=Origin.inferred, generator="g", affirm=True)}
+
+        row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(short_description="Keep me.")))[
+            "short_description"
+        ]
+
+        assert row["generation_state"] == "ready"
+        assert row["generation_reason"] == NO_CHANGE_NEEDED
+        assert row["proposed_value"] is None
+        assert row["basis_value"] == "Keep me."
+        assert row["generated_at"] is not None
+
+    def test_affirming_nothing_is_a_failure(self):
+        proposals = {"short_description": Proposal(value=None, origin=Origin.inferred, generator="g", affirm=True)}
+
+        row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst()))["short_description"]
+
+        assert row["generation_state"] == "failed"
+        assert row["generation_reason"] == AFFIRM_WITHOUT_BASIS
+
+    def test_affirm_ignores_a_stray_value(self):
+        proposals = {"title": Proposal(value="Stray", origin=Origin.inferred, generator="g", affirm=True)}
+
+        row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(title="Kept | Program")))["title"]
+
+        assert row["proposed_value"] is None
+
+    def test_an_affirmed_basis_over_its_limit_is_flagged_on_the_basis(self):
+        proposals = {"short_description": Proposal(value=None, origin=Origin.inferred, generator="g", affirm=True)}
+
+        row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(short_description="x" * 500)))[
+            "short_description"
+        ]
+
+        assert [(f["check"], f["target"], f["model_fixable"]) for f in row["flags"]] == [("char_limit", "basis", False)]
+
+
+class TestFlagProvenance:
+    def test_code_flags_say_so(self):
+        proposals = {"short_description": Proposal(value="x" * 500, origin=Origin.inferred, generator="g")}
+
+        flag = by_key(build_items(job_id=1, proposals=proposals))["short_description"]["flags"][0]
+
+        assert (flag["origin"], flag["target"]) == ("code", "proposal")
+
+    def test_generator_flags_are_stamped_model_whatever_they_claim(self):
+        claimed = {"check": "accuracy", "rule_id": "a.1", "severity": "warning", "message": "m", "origin": "code"}
+        proposals = {"title": Proposal(value="T", origin=Origin.inferred, generator="g", flags=(claimed,))}
+
+        flag = by_key(build_items(job_id=1, proposals=proposals))["title"]["flags"][0]
+
+        assert flag["origin"] == "model"
+        assert flag["target"] == "proposal"
+
+    def test_generator_flags_on_an_affirmation_default_to_the_basis(self):
+        finding = {"check": "accuracy", "rule_id": "a.1", "severity": "warning", "message": "m"}
+        proposals = {
+            "title": Proposal(value=None, origin=Origin.inferred, generator="g", affirm=True, flags=(finding,))
+        }
+
+        flag = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(title="Kept")))["title"]["flags"][0]
+
+        assert flag["target"] == "basis"
+
+
+class TestAlternatives:
+    def test_alternatives_carry_code_measured_limit_flags(self):
+        proposals = {
+            "title": Proposal(
+                value="Main",
+                origin=Origin.inferred,
+                generator="g",
+                alternatives=(Candidate("Short one", angle="place"), Candidate("y" * 120, angle="question")),
+            )
+        }
+
+        alternatives = by_key(build_items(job_id=1, proposals=proposals))["title"]["alternatives"]
+
+        assert [alt["angle"] for alt in alternatives] == ["place", "question"]
+        assert alternatives[0]["flags"] == []
+        assert [(f["check"], f["target"]) for f in alternatives[1]["flags"]] == [("char_limit", "alternative")]
+
+    def test_no_alternatives_unless_the_item_was_produced(self):
+        proposals = {
+            "title": Proposal(value="T", origin=Origin.inferred, generator="g", alternatives=(Candidate("A"),))
+        }
+
+        row = by_key(build_items(job_id=1, proposals=proposals, copy_generation=False))["title"]
+
+        assert row["alternatives"] == []
+
+    def test_an_affirmation_can_still_offer_alternatives(self):
+        proposals = {
+            "title": Proposal(
+                value=None, origin=Origin.inferred, generator="g", affirm=True, alternatives=(Candidate("A"),)
+            )
+        }
+
+        row = by_key(build_items(job_id=1, proposals=proposals, sst_context=sst(title="Kept")))["title"]
+
+        assert [alt["value"] for alt in row["alternatives"]] == ["A"]
 
 
 class TestShippedConfigGate:

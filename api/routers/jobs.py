@@ -954,6 +954,7 @@ async def list_job_items(
             "by_generation_state": _count(items, "generation_state"),
             "by_category": _count(items, "category"),
             "edited": sum(1 for item in items if item.edited_value is not None),
+            "affirmed": sum(1 for item in items if item.is_affirmation()),
             "flagged": sum(1 for item in items if item.has_errors()),
         },
     )

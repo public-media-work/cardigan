@@ -22,6 +22,11 @@ Item keys mirror the AirTable SST field they correspond to, one to one. An
 output with no SST field (the formatted transcript) keeps a key outside that
 set and can be reviewed, edited and copied, but never pushed.
 
+A ready item can also be an **affirmation**: the generator read the basis and
+judged it right as written. It carries no proposal, and its value is the
+basis — "keep as is" is an answer, not a missing one. Only an item with a
+basis can be affirmed; with nothing to keep, a null proposal is a failure.
+
 Nothing blocks. Flags are advisory; the editor is the gate, not the linter.
 """
 
@@ -29,7 +34,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+# generation_reason on a ready item whose generator kept the basis as written.
+NO_CHANGE_NEEDED = "no_change_needed"
 
 
 class ItemCategory(str, Enum):
@@ -94,6 +102,24 @@ class CurrentState(str, Enum):
     unknown = "unknown"  # never fetched (no record to read)
 
 
+class FlagOrigin(str, Enum):
+    """Who raised a flag. A model's judgement and a script's measurement
+    deserve different trust — a model has flagged the editor's own copy as
+    inaccurate (editorial-review prototype, 2026-10-21)."""
+
+    model = "model"
+    code = "code"
+
+
+class FlagTarget(str, Enum):
+    """Which text a flag is about. Flags on existing copy (``basis``) are
+    the editor's to weigh; flags on Cardigan's text are Cardigan's to fix."""
+
+    basis = "basis"
+    proposal = "proposal"
+    alternative = "alternative"
+
+
 class ItemFlag(BaseModel):
     """An advisory finding. Never blocks.
 
@@ -106,6 +132,27 @@ class ItemFlag(BaseModel):
     severity: str = Field(..., description="'error' | 'warning' — advisory only, never blocking")
     message: str
     model_fixable: bool = False
+    origin: FlagOrigin = FlagOrigin.code
+    target: FlagTarget = FlagTarget.proposal
+
+
+class ItemAlternative(BaseModel):
+    """Another candidate value, offered beside the proposal.
+
+    Choosing one is an editor action: the client copies its value into
+    ``edited_value``, so ``proposed_value`` stays a record of what the
+    generator said. Length is measured by code, never reported by a model —
+    a model has claimed a 421-character text was under 350.
+    """
+
+    value: str
+    angle: Optional[str] = Field(None, description="What this candidate leans on, e.g. 'place', 'question'")
+    flags: List[ItemFlag] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def length(self) -> int:
+        return len(self.value)
 
 
 class Item(BaseModel):
@@ -124,7 +171,8 @@ class Item(BaseModel):
     generation_reason: Optional[str] = Field(
         None,
         description="Why not ready, e.g. 'copy_generation_off', 'integration:youtube_api', "
-        "'structured_output:seo', 'no_value_extracted'",
+        "'structured_output:seo', 'no_value_extracted'. On a ready item, 'no_change_needed' "
+        "marks an affirmation of the basis",
     )
     review_state: ReviewState = ReviewState.proposed
 
@@ -136,6 +184,9 @@ class Item(BaseModel):
     rationale: Optional[str] = Field(None, description="One line: what changed and why")
 
     flags: List[ItemFlag] = Field(default_factory=list)
+    alternatives: List[ItemAlternative] = Field(
+        default_factory=list, description="Other candidates; choosing one copies it into edited_value"
+    )
     char_limit: Optional[int] = Field(None, description="From config/house_style.yaml")
 
     generator: Optional[str] = None
@@ -150,8 +201,22 @@ class Item(BaseModel):
 
     @property
     def value(self) -> Optional[str]:
-        """What a push or a copy would use: the edit when there is one."""
-        return self.edited_value if self.edited_value is not None else self.proposed_value
+        """What a copy would use: the edit, else the proposal, else — for an
+        affirmation — the basis it kept."""
+        if self.edited_value is not None:
+            return self.edited_value
+        if self.is_affirmation():
+            return self.basis_value
+        return self.proposed_value
+
+    def is_affirmation(self) -> bool:
+        """True when the generator kept the basis as written. A push of an
+        unedited affirmation writes nothing."""
+        return (
+            self.generation_state == GenerationState.ready
+            and self.proposed_value is None
+            and self.generation_reason == NO_CHANGE_NEEDED
+        )
 
     def is_suggestion(self) -> bool:
         """True when the proposal builds on existing text (render as a diff)."""

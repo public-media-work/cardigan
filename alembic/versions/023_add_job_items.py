@@ -16,7 +16,9 @@ key                Mirrors the SST field (``short_description``). UNIQUE with
 origin             'deterministic' | 'inferred'. If a model touched the value
                    it is inferred. A hand edit never changes it.
 generation_state   'ready' | 'failed' | 'unavailable' — the system's axis,
-generation_reason  with a reason whenever it isn't ready.
+generation_reason  with a reason whenever it isn't ready. A ready item with
+                   reason 'no_change_needed' and no proposed_value is an
+                   affirmation: the generator kept the basis as written.
 review_state       'proposed' | 'accepted' | 'dismissed' — the editor's axis.
                    Written on insert only; re-extraction never touches it.
 basis_value        The target's value when the item was generated. A non-null
@@ -29,7 +31,12 @@ proposed_value     Always the full text, never a patch.
 edited_value       The editor's hand edit. Push/copy use it when present.
                    Written on insert only, like review_state.
 flags              JSON array of {check, rule_id, severity, message,
-                   model_fixable}. Advisory; nothing blocks.
+                   model_fixable, origin, target}. origin is model | code;
+                   target is basis | proposal | alternative. Advisory;
+                   nothing blocks.
+alternatives       JSON array of {value, angle, flags} — other candidates.
+                   Choosing one copies it into edited_value; proposed_value
+                   stays what the generator said.
 generator, model,  Provenance and spend. The item records spend; caps belong
 *_tokens, cost_usd to the generator contract (#427).
 
@@ -70,6 +77,7 @@ def upgrade() -> None:
         sa.Column("edited_value", sa.Text(), nullable=True),
         sa.Column("rationale", sa.Text(), nullable=True),
         sa.Column("flags", sa.Text(), nullable=True),
+        sa.Column("alternatives", sa.Text(), nullable=True),
         sa.Column("char_limit", sa.Integer(), nullable=True),
         sa.Column("generator", sa.Text(), nullable=True),
         sa.Column("model", sa.Text(), nullable=True),
