@@ -13,8 +13,10 @@ findings write-up. These are evidence for bug reports, not fixtures for the test
 Use the `/test-run` skill (`.claude/skills/test-run/SKILL.md`). It drives
 `test-runs/harness.py`, a single reusable harness (`python test-runs/harness.py --help`). The harness
 captures prompts from the worker's own `_run_phase`, builds SST context through the worker's own
-`_fetch_sst_context`, prints a standard subagent brief per phase, and runs prod's gates plus a
-timestamp gate. New runs live in the gitignored `OUTPUT/supervised-runs/`. Their data goes to the
+`_fetch_sst_context` (`sst --live` reads the record from Airtable, read-only), prints a standard
+subagent brief per phase, and runs prod's gates plus a timestamp gate. The skill also documents a
+full local worker run (real API and worker against a throwaway DB) for testing a deployment or
+worker change end to end. New runs live in the gitignored `OUTPUT/supervised-runs/`. Their data goes to the
 private `internal-production-data` repo, never here. The per-run `harness.py` copies in older run
 folders are kept as they were run.
 

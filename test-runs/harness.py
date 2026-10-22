@@ -6,8 +6,9 @@ sending the captured prompt unchanged). Every prompt is CAPTURED, not re-impleme
 harness runs the worker's real ``_run_phase`` (and through it
 ``_run_formatter_chunked``) with ``llm.chat`` replaced by a recorder, so the files it
 writes are exactly what the code under test would send. Prompt capture and gates make
-no LLM, network or DB calls; only ``code`` (git fetch), ``setup`` (SRT download) and
-``replay`` (OpenRouter, paid, key via get-secret.sh) touch the network.
+no LLM, network or DB calls; only ``code`` (git fetch), ``setup`` (SRT download), ``sst --live``
+(Airtable reads, never writes) and ``replay`` (OpenRouter, paid) touch the network. Keys come
+from get-secret.sh.
 
 Each run is a directory holding ``run.json`` (written by ``setup``), the source
 ``.srt``, and one subdirectory per phase. Every command takes ``--run-dir``.
@@ -16,7 +17,8 @@ Commands:
   code      --dest DIR [--prs 409,421]   export origin/main (or a merged PR stack) to DIR
   setup     --run-dir D --srt URL|PATH --code DIR [--media-id ID] [--prs ...]
   sst-fields                             print the Airtable field names to fetch
-  sst       --run-dir D [--record R.json] [--project P.json]
+  sst       --run-dir D --live | [--record R.json] [--project P.json]
+                                         --live: read-only Airtable fetch by media ID
   intake    --run-dir D
   prompts   --run-dir D PHASE [--variant V] [--flags F.json] [--feedback TEXT]
                                          [--model M] [--force-max-tokens N]
@@ -218,6 +220,14 @@ def cmd_setup(a):
 # --------------------------------------------------------------------------- SST
 
 
+def _secret(name):
+    r = subprocess.run(["get-secret.sh", name], capture_output=True, text=True)
+    key = r.stdout.strip()
+    if r.returncode != 0 or not key:
+        sys.exit(f"could not resolve {name} via get-secret.sh (is it on PATH?)")
+    return key
+
+
 def cmd_sst_fields(a):
     run_dir = Path(a.run_dir).resolve() if a.run_dir else None
     code = Path(json.loads((run_dir / "run.json").read_text())["code"]) if run_dir else REPO_ROOT
@@ -244,16 +254,59 @@ class FakeAirtable:
         return self.project
 
 
+class ReadOnlyAirtable:
+    """The code under test's real Airtable client, narrowed to the three reads
+    _fetch_sst_context makes. Saves what it reads (sst_record.json, sst_project.json) and
+    records errors the worker would swallow, so "no record" and "lookup failed" differ."""
+
+    def __init__(self, client, run_dir):
+        self._client, self._dir = client, run_dir
+        self.errors = []
+
+    async def _read(self, name, arg, save_as):
+        try:
+            rec = await getattr(self._client, name)(arg)
+        except Exception as e:  # recorded, then re-raised to the worker
+            self.errors.append(f"{name}({arg!r}): {e}")
+            raise
+        if rec:
+            (self._dir / save_as).write_text(json.dumps(rec, indent=2))
+        return rec
+
+    async def get_sst_record(self, record_id):
+        return await self._read("get_sst_record", record_id, "sst_record.json")
+
+    async def search_sst_by_media_id(self, media_id):
+        return await self._read("search_sst_by_media_id", media_id, "sst_record.json")
+
+    async def get_project_record(self, record_id):
+        return await self._read("get_project_record", record_id, "sst_project.json")
+
+
 def cmd_sst(a):
+    import os
+
     run = Run(a.run_dir)
     wm = load_code(run)
-    record = json.loads(Path(a.record).read_text()) if a.record else None
-    project = json.loads(Path(a.project).read_text()) if a.project else None
     job = dict(run.job)
-    if record:
-        job["airtable_record_id"] = record.get("id")
-    with mock.patch.object(wm, "get_airtable_client", lambda: FakeAirtable(record, project)):
-        ctx = asyncio.run(wm.JobWorker()._fetch_sst_context(job))
+    if a.live:
+        if a.record or a.project:
+            sys.exit("--live fetches the records itself; drop --record/--project")
+        if not job.get("media_id"):
+            sys.exit("--live needs a media ID: re-run `setup` with --media-id, or run `sst` with no files")
+        os.environ.setdefault("AIRTABLE_API_KEY", _secret("AIRTABLE_API_KEY"))
+        live = ReadOnlyAirtable(wm.get_airtable_client(), run.dir)
+        with mock.patch.object(wm, "get_airtable_client", lambda: live):
+            ctx = asyncio.run(wm.JobWorker()._fetch_sst_context(job))
+        if live.errors:
+            sys.exit("Airtable read failed (prod would run without SST):\n" + "\n".join(live.errors))
+    else:
+        record = json.loads(Path(a.record).read_text()) if a.record else None
+        project = json.loads(Path(a.project).read_text()) if a.project else None
+        if record:
+            job["airtable_record_id"] = record.get("id")
+        with mock.patch.object(wm, "get_airtable_client", lambda: FakeAirtable(record, project)):
+            ctx = asyncio.run(wm.JobWorker()._fetch_sst_context(job))
     out = run.dir / "sst_context.json"
     if ctx is None:
         out.unlink(missing_ok=True)
@@ -633,11 +686,7 @@ REASONING_MANDATORY = "reasoning is mandatory"
 
 
 def _openrouter_key():
-    r = subprocess.run(["get-secret.sh", "OPENROUTER_API_KEY"], capture_output=True, text=True)
-    key = r.stdout.strip()
-    if r.returncode != 0 or not key:
-        sys.exit("could not resolve OPENROUTER_API_KEY via get-secret.sh (is it on PATH?)")
-    return key
+    return _secret("OPENROUTER_API_KEY")
 
 
 def cmd_replay(a):
@@ -849,6 +898,12 @@ def main():
     c = sub("sst", "build sst_context.json through the worker's _fetch_sst_context")
     c.add_argument("--record", help='SST record JSON {"id": ..., "fields": {name: value}}; omit if none')
     c.add_argument("--project", help="linked Project record JSON, same shape")
+    c.add_argument(
+        "--live",
+        action="store_true",
+        help="read the SST record (by the unit's media ID) and its Project from Airtable, read-only, "
+        "with the code under test's own client; key via get-secret.sh",
+    )
     sub("intake", "metrics, caption convention, chunking decision, models, SST status")
     c = sub("prompts", "capture the prompt(s) prod would send for a phase")
     c.add_argument("phase", choices=PHASES)
