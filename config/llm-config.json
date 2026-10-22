@@ -58,8 +58,8 @@
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "fallback_model": "anthropic/claude-sonnet-4.6",
       "api_key_env": "OPENROUTER_API_KEY",
-      "timeout": 180,
-      "max_tokens": 16384,
+      "timeout": 420,
+      "max_tokens": 32768,
       "cost_per_project": 0.02
     },
     "openrouter-big-brain": {
@@ -154,7 +154,8 @@
       "enabled": true
     },
     "reasoning": {
-      "disabled_phases": ["formatter"]
+      "disabled_phases": ["formatter"],
+      "reserve_tokens": 8000
     },
     "chunking": {
       "enabled": true,
