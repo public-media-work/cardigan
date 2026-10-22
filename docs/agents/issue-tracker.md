@@ -17,6 +17,16 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 > Any `gh --repo mriechers/cardigan` invocation is pointed at the wrong place. (The
 > GHCR image prefix `ghcr.io/mriechers/cardigan` is a separate, still-current path.)
 
+## Merging pull requests
+
+`main` requires every branch to be up to date, and auto-merge is off. So each merge puts every other open PR behind main, and PRs must land one at a time:
+
+```bash
+scripts/merge_sequence.sh 421 422 462   # update → wait for CI → squash-merge, in order
+```
+
+It pins each merge to the head SHA it waited on (`--match-head-commit`) and stops at the first PR that fails CI or conflicts. It doesn't use `--delete-branch`, which errors when the branch is checked out in a worktree. If another session is deploying from main, check with it before merging.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
