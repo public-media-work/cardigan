@@ -277,6 +277,108 @@ async def test_no_reasoning_lookup_without_reasoning_off(monkeypatch):
     assert "reasoning" not in captured["payload"]
 
 
+SONNET_ALIAS = "~anthropic/claude-sonnet-latest"
+
+
+async def test_resolve_model_id_passes_pinned_ids_through(monkeypatch):
+    from api.services import model_roster
+
+    resolve = AsyncMock()
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+    assert await client.resolve_model_id("anthropic/claude-sonnet-4.6", job_id=1) == "anthropic/claude-sonnet-4.6"
+    assert await client.resolve_model_id(None, job_id=1) is None
+    resolve.assert_not_awaited()
+
+
+async def test_alias_is_pinned_for_the_rest_of_the_job(monkeypatch):
+    """The alias moving mid-job must not change the model a job runs on (#499)."""
+    from api.services import model_roster
+
+    resolve = AsyncMock(side_effect=["anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-6"])
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-5.5"
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-5.5"
+    assert resolve.await_count == 1
+    # A different job resolves for itself and sees where the alias points now.
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=8) == "anthropic/claude-sonnet-6"
+
+
+async def test_reset_job_models_lets_a_retry_resolve_afresh(monkeypatch):
+    from api.services import model_roster
+
+    resolve = AsyncMock(side_effect=["anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-6"])
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+
+    await client.resolve_model_id(SONNET_ALIAS, job_id=7)
+    client.reset_job_models(7)
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-6"
+
+
+async def test_unresolvable_alias_returns_none_and_is_not_pinned(monkeypatch):
+    from api.services import model_roster
+
+    resolve = AsyncMock(side_effect=[None, "anthropic/claude-sonnet-5.5"])
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) is None
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-5.5"
+
+
+async def test_alias_pins_are_bounded(monkeypatch):
+    from api.services import llm as llm_mod
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "resolve_alias", AsyncMock(return_value="anthropic/claude-sonnet-5.5"))
+    monkeypatch.setattr(llm_mod, "MAX_PINNED_JOBS", 3)
+    client = _openrouter_client()
+    for job_id in range(5):
+        await client.resolve_model_id(SONNET_ALIAS, job_id=job_id)
+    assert list(client._job_model_pins) == [2, 3, 4]
+
+
+async def test_chat_sends_the_resolved_id_never_the_alias(monkeypatch):
+    """Guards, cost and the provider call all see the concrete model id."""
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "resolve_alias", AsyncMock(return_value="anthropic/claude-sonnet-5.5"))
+    client = _openrouter_client()
+    client.config = {
+        "phase_models": {"formatter": SONNET_ALIAS},
+        "backends": {"openrouter": {"type": "openrouter", "endpoint": "https://openrouter.ai/x"}},
+    }
+    seen = {}
+
+    def guard(name):
+        return lambda model: seen.setdefault(name, model)
+
+    monkeypatch.setattr(client, "check_run_cost_cap", lambda: None)
+    monkeypatch.setattr(client, "check_model_allowed", guard("allowlist"))
+    monkeypatch.setattr(client, "check_token_cost", guard("token_cost"))
+    monkeypatch.setattr(client, "get_api_key", lambda cfg: "fake-key")
+
+    class Stop(Exception):
+        pass
+
+    async def fake_call(config, model, messages, api_key, **kwargs):
+        seen["call"] = model
+        raise Stop
+
+    monkeypatch.setattr(client, "_call_openrouter", fake_call)
+
+    with pytest.raises(Stop):
+        await client.chat(
+            messages=[{"role": "user", "content": "hi"}], backend="openrouter", phase="formatter", job_id=3
+        )
+
+    assert seen == {key: "anthropic/claude-sonnet-5.5" for key in ("allowlist", "token_cost", "call")}
+    assert client.active_model == "anthropic/claude-sonnet-5.5"
+
+
 async def test_reasoning_reserve_only_for_mandatory_models(monkeypatch):
     from api.services import model_roster
 

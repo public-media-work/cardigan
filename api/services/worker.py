@@ -804,6 +804,8 @@ Extract any name or spelling corrections that should be added to the glossary. S
         # Pick up any model/config changes made via the Settings API since
         # this worker process started (api and worker are separate containers).
         self.llm.reload_config()
+        # Model aliases ("latest Sonnet") resolve once per run and stay pinned for it.
+        self.llm.reset_job_models(job_id)
         project_name = job.get("project_name") or "Unknown"
 
         logger.info("Processing job", extra={"job_id": job_id, "project_name": project_name})
@@ -2559,7 +2561,9 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 except Exception:
                     max_output_tokens = DEFAULT_MAX_TOKENS
                 # Reasoning that can't be switched off shares the same cap (#465).
-                formatter_model = model_override or self.llm.config.get("phase_models", {}).get("formatter")
+                formatter_model = await self.llm.resolve_model_id(
+                    model_override or self.llm.config.get("phase_models", {}).get("formatter"), job_id
+                )
                 reserve = await self.llm.reasoning_reserve(formatter_model)
                 if reserve:
                     max_output_tokens = max(max_output_tokens - reserve, 1)
