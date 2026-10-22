@@ -492,7 +492,7 @@ def _char_limit_flags(
     flags: list[dict[str, Any]] = []
     measured, program = split_title(value) if key == "title" else (value, None)
     if limit.max is not None and len(measured) > limit.max:
-        what = "characters before the program name" if program else "characters"
+        what = "characters excluding the program name" if program else "characters"
         flags.append(_limit_flag("char_limit.max", f"{len(measured)} {what}; the limit is {limit.max}", target))
     if limit.full_max is not None and len(value) > limit.full_max:
         flags.append(

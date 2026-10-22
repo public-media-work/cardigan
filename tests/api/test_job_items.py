@@ -304,12 +304,13 @@ async def test_a_malformed_stored_entry_drops_alone(job):
             row["alternatives"] = [
                 {"value": "Kept", "angle": "place", "flags": [{"check": "x"}, good]},
                 {"angle": "no value"},
+                {"value": "Corrupt flags", "flags": 5},
             ]
     await upsert_job_items(job.id, rows)
 
     item = await get_job_item(job.id, "title")
     assert [flag.rule_id for flag in item.flags] == ["char_limit.max"]
-    assert [(alt.value, len(alt.flags)) for alt in item.alternatives] == [("Kept", 1)]
+    assert [(alt.value, len(alt.flags)) for alt in item.alternatives] == [("Kept", 1), ("Corrupt flags", 0)]
 
 
 @pytest.mark.asyncio

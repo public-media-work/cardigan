@@ -228,7 +228,8 @@ class Item(BaseModel):
 
     def has_errors(self) -> bool:
         """Advisory only — never consulted as a gate. Flags on the basis are
-        the editor's to weigh, so only flags on Cardigan's own text count."""
+        the editor's to weigh, so only flags on Cardigan's own text count.
+        Flags on alternatives live on each alternative and never count."""
         return any(flag.severity == "error" and flag.target != FlagTarget.basis for flag in self.flags)
 
 

@@ -1717,7 +1717,9 @@ def _parse_flag(entry) -> Optional[ItemFlag]:
 def _parse_alternative(entry) -> Optional[ItemAlternative]:
     if not isinstance(entry, dict):
         return None
-    flags = [flag for flag in (_parse_flag(f) for f in entry.get("flags") or []) if flag is not None]
+    raw_flags = entry.get("flags")
+    raw_flags = raw_flags if isinstance(raw_flags, list) else []
+    flags = [flag for flag in (_parse_flag(f) for f in raw_flags) if flag is not None]
     try:
         return ItemAlternative(**{**entry, "flags": flags})
     except (TypeError, ValueError):
