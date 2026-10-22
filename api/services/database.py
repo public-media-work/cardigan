@@ -22,6 +22,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     Text,
+    UniqueConstraint,
     and_,
     delete,
     desc,
@@ -74,6 +75,7 @@ def get_app_version() -> str:
 
 from api.models.config import ConfigItem, ConfigValueType
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
+from api.models.item import Item, ItemAlternative, ItemFlag, ItemUpdate
 from api.models.job import Job, JobCreate, JobOutputs, JobPhase, JobStatus, JobUpdate, PhaseStatus
 
 
@@ -203,6 +205,60 @@ screengrab_attachments_table = Table(
     Column("attachments_after", Integer, nullable=True),
     Column("success", Boolean, server_default="1"),
     Column("error_message", Text, nullable=True),
+)
+
+# Define job_items table (migration 023) — one output of one job (#426).
+# Items are authoritative once extracted; the *_output.md phase documents stay
+# on disk as frozen provenance and are never rewritten by an edit or a review.
+job_items_table = Table(
+    "job_items",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False),
+    Column("key", Text, nullable=False),
+    Column("category", Text, nullable=False),  # metadata | copy | transcript
+    Column("origin", Text, nullable=False),  # deterministic | inferred
+    Column("generation_state", Text, nullable=False, server_default="ready"),  # ready | failed | unavailable
+    Column("generation_reason", Text, nullable=True),
+    Column("review_state", Text, nullable=False, server_default="proposed"),  # proposed | accepted | dismissed
+    Column("basis_value", Text, nullable=True),
+    Column("basis_fetched_at", DateTime, nullable=True),
+    Column("current_state", Text, nullable=False, server_default="unknown"),
+    Column("proposed_value", Text, nullable=True),
+    Column("edited_value", Text, nullable=True),
+    Column("rationale", Text, nullable=True),
+    Column("flags", Text, nullable=True),  # JSON array of ItemFlag
+    Column("alternatives", Text, nullable=True),  # JSON array of ItemAlternative
+    Column("char_limit", Integer, nullable=True),
+    Column("generator", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("input_tokens", Integer, nullable=True),
+    Column("output_tokens", Integer, nullable=True),
+    Column("cost_usd", Float, nullable=True),
+    Column("generated_at", DateTime, nullable=True),
+    Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    UniqueConstraint("job_id", "key", name="uq_job_items_job_key"),
+)
+
+# Define item_pushes table (migration 023) — an item's state on one target.
+# Empty until the push endpoint exists (#428).
+item_pushes_table = Table(
+    "item_pushes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("item_id", Integer, ForeignKey("job_items.id", ondelete="CASCADE"), nullable=False),
+    Column("target", Text, nullable=False),  # 'airtable'
+    Column("target_record_id", Text, nullable=True),
+    Column("target_field_id", Text, nullable=True),
+    Column("state", Text, nullable=False, server_default="not_pushed"),
+    Column("pushed_value", Text, nullable=True),
+    Column("pushed_at", DateTime, nullable=True),
+    Column("pushed_by", Text, nullable=True),
+    Column("error", Text, nullable=True),
+    Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    UniqueConstraint("item_id", "target", name="uq_item_pushes_item_target"),
 )
 
 
@@ -1489,6 +1545,224 @@ async def list_config() -> List[ConfigItem]:
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+
+# ============================================================================
+# Job Items (#426)
+# ============================================================================
+
+# Columns only the editor writes. Re-extraction never touches them on an
+# existing item, whatever the caller puts in the row — the guarantee lives
+# here, not in the absence of a caller that sends them.
+EDITOR_OWNED_ITEM_COLUMNS = frozenset({"review_state", "edited_value"})
+
+
+async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
+    """Insert or update a job's items, keyed on (job_id, key).
+
+    Regeneration updates in place — there is no per-item version history by
+    design. AirTable's own revision tracking covers published values, and
+    worker.py archives superseded phase output as
+    ``{phase}_output.{timestamp}.prev.md``.
+
+    Editor-owned columns (``EDITOR_OWNED_ITEM_COLUMNS``) are written on insert
+    only. An existing item keeps its review state and hand edit through any
+    number of re-extractions.
+
+    Returns the number of rows written.
+    """
+    if not rows:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    written = 0
+
+    async with get_session() as session:
+        existing_result = await session.execute(select(job_items_table.c.key).where(job_items_table.c.job_id == job_id))
+        existing = {row.key for row in existing_result.fetchall()}
+
+        for row in rows:
+            payload = dict(row)
+            payload["job_id"] = job_id
+            payload["updated_at"] = now
+
+            for column in ("flags", "alternatives"):
+                blob = payload.get(column)
+                if isinstance(blob, list):
+                    payload[column] = json.dumps(blob) if blob else None
+
+            key = payload["key"]
+            if key in existing:
+                for column in EDITOR_OWNED_ITEM_COLUMNS:
+                    payload.pop(column, None)
+                stmt = (
+                    update(job_items_table)
+                    .where(
+                        and_(
+                            job_items_table.c.job_id == job_id,
+                            job_items_table.c.key == key,
+                        )
+                    )
+                    .values(**payload)
+                )
+            else:
+                payload["created_at"] = now
+                stmt = job_items_table.insert().values(**payload)
+
+            await session.execute(stmt)
+            written += 1
+
+    return written
+
+
+async def get_job_items(job_id: int, include_values: bool = True) -> List[Item]:
+    """Return a job's items in registry order.
+
+    When ``include_values`` is False, values longer than
+    ``items.LARGE_VALUE_CHARS`` are replaced with None — the transcript item
+    alone is routinely 50-150KB and would dominate a list response.
+    """
+    from api.services.items import LARGE_VALUE_CHARS, SPECS_BY_KEY
+
+    async with get_session() as session:
+        stmt = select(job_items_table).where(job_items_table.c.job_id == job_id)
+        result = await session.execute(stmt)
+        rows = result.fetchall()
+
+    order = list(SPECS_BY_KEY)
+    items = [_row_to_item(row, include_values=include_values, large=LARGE_VALUE_CHARS) for row in rows]
+    items.sort(key=lambda item: order.index(item.key) if item.key in order else len(order))
+    return items
+
+
+async def get_job_item(job_id: int, key: str) -> Optional[Item]:
+    """Return one item by its key, or None."""
+    async with get_session() as session:
+        stmt = select(job_items_table).where(and_(job_items_table.c.job_id == job_id, job_items_table.c.key == key))
+        result = await session.execute(stmt)
+        row = result.fetchone()
+
+    return _row_to_item(row) if row else None
+
+
+async def update_job_item(job_id: int, key: str, item_update: ItemUpdate) -> Optional[Item]:
+    """Apply an editor action to one item: a hand edit and/or a review verdict.
+
+    Only fields the caller actually sent are applied, so ``edited_value: null``
+    clears an edit while omitting it leaves the edit alone. Origin is never
+    touched — a hand-edited inferred item stays inferred.
+    """
+    sent = item_update.model_fields_set
+    values: dict = {}
+
+    if "edited_value" in sent:
+        values["edited_value"] = item_update.edited_value
+    if "review_state" in sent and item_update.review_state is not None:
+        values["review_state"] = item_update.review_state.value
+
+    if not values:
+        return await get_job_item(job_id, key)
+
+    values["updated_at"] = datetime.now(timezone.utc)
+
+    async with get_session() as session:
+        stmt = (
+            update(job_items_table)
+            .where(and_(job_items_table.c.job_id == job_id, job_items_table.c.key == key))
+            .values(**values)
+        )
+        result = await session.execute(stmt)
+        if result.rowcount == 0:
+            return None
+
+    return await get_job_item(job_id, key)
+
+
+async def delete_job_items(job_id: int) -> int:
+    """Delete every item for a job. Returns the count removed."""
+    async with get_session() as session:
+        stmt = delete(job_items_table).where(job_items_table.c.job_id == job_id)
+        result = await session.execute(stmt)
+        return result.rowcount or 0
+
+
+def _parse_each(blob: Optional[str], parse) -> list:
+    """Parse a JSON list one entry at a time, skipping entries that don't fit.
+
+    Flags and alternatives are advisory and never gate anything, so a
+    malformed entry must not make the item unreadable — nor take its
+    well-formed neighbours (the code-measured char_limit flags among them)
+    down with it.
+    """
+    if not blob:
+        return []
+    try:
+        entries = json.loads(blob)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [parsed for parsed in (parse(entry) for entry in entries) if parsed is not None]
+
+
+def _parse_flag(entry) -> Optional[ItemFlag]:
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return ItemFlag(**entry)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_alternative(entry) -> Optional[ItemAlternative]:
+    if not isinstance(entry, dict):
+        return None
+    raw_flags = entry.get("flags")
+    raw_flags = raw_flags if isinstance(raw_flags, list) else []
+    flags = [flag for flag in (_parse_flag(f) for f in raw_flags) if flag is not None]
+    try:
+        return ItemAlternative(**{**entry, "flags": flags})
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
+    """Convert a database row to an Item model."""
+    flags = _parse_each(row.flags, _parse_flag)
+    alternatives = _parse_each(row.alternatives, _parse_alternative)
+
+    def _maybe(value: Optional[str]) -> Optional[str]:
+        if not include_values and value is not None and len(value) > large:
+            return None
+        return value
+
+    return Item(
+        id=row.id,
+        job_id=row.job_id,
+        key=row.key,
+        category=row.category,
+        origin=row.origin,
+        generation_state=row.generation_state,
+        generation_reason=row.generation_reason,
+        review_state=row.review_state,
+        basis_value=_maybe(row.basis_value),
+        basis_fetched_at=row.basis_fetched_at,
+        current_state=row.current_state,
+        proposed_value=_maybe(row.proposed_value),
+        edited_value=_maybe(row.edited_value),
+        rationale=row.rationale,
+        flags=flags,
+        alternatives=alternatives,
+        char_limit=row.char_limit,
+        generator=row.generator,
+        model=row.model,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        cost_usd=row.cost_usd,
+        generated_at=row.generated_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
 def _row_to_job(row) -> Job:

@@ -178,7 +178,10 @@ casing:
 # ------------------------------------------------------------------
 limits:
   fields:
-    title: {max: 80}
+    # Ruling #459 (2026-10-22): max applies to the title part, without the
+    # program name ("Title | Program", or "Wisconsin Life | Title").
+    # full_max caps the whole string at YouTube's 100-character title limit.
+    title: {max: 80, full_max: 100}
     short_description: {max: 90}
     long_description: {max: 350}
     keywords: {count: {min: 15, max: 20}}
