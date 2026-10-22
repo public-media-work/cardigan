@@ -66,3 +66,10 @@ api/_version.py
 # dashboard.db, jobs.json, llm-config.json, and per-media-ID output/.
 # Per-machine and regenerable; never shared.
 .devdata/
+
+# Dependencies are pinned in requirements.lock (pip-compiled). A uv.lock
+# appears if someone runs `uv sync` locally; it is not used, so keep it out.
+uv.lock
+
+# Bulk job exports belong in the private internal-production-data repo, never here.
+test-runs/archive/

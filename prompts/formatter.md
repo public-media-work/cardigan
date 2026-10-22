@@ -238,7 +238,7 @@ If you encounter issues the brainstorming document doesn't resolve:
 
    ---
 
-   **John Smith (Host):**
+   **John Smith:**
    [Clean transcript content begins here, with NO inline notes...]
    ```
 
@@ -357,10 +357,13 @@ Before saving your formatted transcript, verify:
 
 If captions show speakers talking over each other:
 ```markdown
-**Host & Guest (simultaneously):**
-[Describe the overlap, e.g., "Both speakers agree enthusiastically"]
+**John Smith:**
+[Describe the overlap in the line itself, e.g., "Both speakers agree enthusiastically."
+Attribute it to the speaker it belongs to; do not invent a combined label and do
+not use a parenthetical. If neither name is known, use "Host:" and "Guest:" for
+BOTH turns — never mix a real name with a generic fallback.]
 
-**Host:**
+**Sarah Williams:**
 [Continues after overlap]
 ```
 

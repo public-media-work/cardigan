@@ -1161,6 +1161,122 @@ class TestWorkerRestartSignal:
             assert await worker._should_stop_for_restart() is False
 
 
+class TestReasoningPerPhase:
+    """Reasoning tokens share the max_tokens budget, so the formatter disables them.
+
+    Measured on anthropic/claude-sonnet-5 with max_tokens=16384: reasoning took
+    12575 of 16384 tokens and the formatter stopped mid-sentence at 2044 words.
+    With reasoning off the same prompt finished cleanly in 6023 tokens (#403/#404).
+    """
+
+    def _worker_with_config(self, routing, backend_types=None):
+        from types import SimpleNamespace
+
+        from api.services.worker import JobWorker
+
+        types_by_backend = backend_types or {"openrouter": "openrouter", "openai": "openai"}
+        worker = JobWorker()
+        worker.llm = SimpleNamespace(
+            config={"routing": routing},
+            get_backend_config=lambda b: {"type": types_by_backend.get(b)},
+        )
+        return worker
+
+    def test_formatter_disables_reasoning(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openrouter") == {"enabled": False}
+
+    def test_other_phases_keep_reasoning(self):
+        """The validator is a judgment task — leave its reasoning alone."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("validator", "openrouter") is None
+
+    def test_disabled_phases_is_configurable(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter", "timestamp"]}})
+        assert worker._reasoning_payload("timestamp", "openrouter") == {"enabled": False}
+        assert worker._reasoning_payload("analyst", "openrouter") is None
+
+    def test_missing_config_leaves_reasoning_untouched(self):
+        """No reasoning config means no opinion — don't send the parameter."""
+        worker = self._worker_with_config({})
+        assert worker._reasoning_payload("formatter", "openrouter") is None
+
+    def test_not_sent_to_an_openai_type_backend(self):
+        """`{"enabled": False}` is OpenRouter's wire format (#404 review).
+
+        _call_openai spreads **kwargs straight into its payload, so sending it
+        there puts an unrecognised `reasoning` field on the request, which a
+        real OpenAI-compatible endpoint can reject. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format.
+        """
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openai") is None
+
+    def test_unknown_backend_sends_nothing(self):
+        """Fail closed: if the backend type can't be resolved, send no parameter."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}}, backend_types={})
+        assert worker._reasoning_payload("formatter", "mystery") is None
+
+
+class TestChunkWrapperInstructions:
+    """FMT-1: the chunked formatter produced a document with no header and no
+    Status footer, and every deterministic gate passed it.
+
+    Chunk 0's prompt said "Format only the dialogue in this section", which
+    contradicts the system prompt's mandatory header — Sonnet dropped the
+    header. No chunk was ever told to emit the Status footer, and
+    merge_formatter_chunks only keeps a Status line if the last chunk wrote one.
+    """
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_first_chunk_is_told_to_write_the_header(self):
+        out = self._worker()._chunk_wrapper_instructions(0, 3).lower()
+        assert "header" in out
+        assert "do not" not in out.split("header")[0][-40:], "chunk 0 must be told to WRITE the header"
+
+    def test_last_chunk_is_told_to_write_the_status_footer(self):
+        out = self._worker()._chunk_wrapper_instructions(2, 3).lower()
+        assert "status" in out
+
+    def test_middle_chunk_writes_neither_wrapper(self):
+        out = self._worker()._chunk_wrapper_instructions(1, 3).lower()
+        assert "write the metadata header" not in out
+        assert "status footer" not in out
+
+    def test_single_chunk_writes_both(self):
+        """A one-chunk run is both first and last."""
+        out = self._worker()._chunk_wrapper_instructions(0, 1).lower()
+        assert "header" in out and "status" in out
+
+
+class TestRetryContextSection:
+    """RETRY-1: the chunked formatter path never read _validation_flags,
+    _previous_output or _editorial_feedback, so every retry or escalation of a
+    chunked job was a blind re-run of the identical prompt — the operator's
+    typed feedback was silently discarded."""
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_includes_editorial_feedback(self):
+        out = self._worker()._retry_context_section({"_editorial_feedback": "merge the first two chapters"})
+        assert "merge the first two chapters" in out
+
+    def test_includes_validation_flags(self):
+        out = self._worker()._retry_context_section({"_validation_flags": ["speaker mislabeled at 4:10"]})
+        assert "speaker mislabeled at 4:10" in out
+
+    def test_empty_without_retry_context(self):
+        assert self._worker()._retry_context_section({}) == ""
+
+
 class TestTruncationMessage:
     """#405: the truncation pause promised an escalation no code path performed.
 
