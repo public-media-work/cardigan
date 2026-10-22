@@ -17,7 +17,7 @@ from pathlib import Path
 
 from api.routers.config import DEFAULT_PHASE_MODELS
 
-_CONFIG = json.loads(Path("config/llm-config.json").read_text())
+_CONFIG = json.loads((Path(__file__).resolve().parent.parent / "config" / "llm-config.json").read_text())
 
 
 def test_seo_phase_model_is_not_haiku():
