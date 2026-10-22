@@ -19,7 +19,7 @@ How Cardigan V4 runs on **cardigan02**: an unprivileged Debian 13 LXC with syste
 **Services:**
 - `cardigan-api`: uvicorn on `:8100`; runs migrations before it starts
 - `cardigan-worker`
-- nginx: the dashboard on `:3100`, proxying `/api/` to `127.0.0.1:8100`
+- nginx: the dashboard on `:3100`, proxying `/api/` to `127.0.0.1:8100`; plus the **public preview vhost on `:3101`** when `/etc/nginx/cardigan-preview.htpasswd` exists (see below)
 
 **Not deployed here (same as today's prod):** diarization (#473), the HTTP MCP server (#474), API-key auth (#475).
 
@@ -40,7 +40,7 @@ ssh -t cardigan02 tmux new -A -s deploy "'cardigan-deploy $(git rev-parse origin
 
 1. **Check out and install:** checks out the commit, installs from the lock, and reinstalls the package so the version it reports matches the commit.
 2. **Dashboard:** builds and publishes it.
-3. **Units and nginx:** reinstalls the units and renders the nginx site.
+3. **Units and nginx:** reinstalls the units and renders the nginx site, including the `:3101` preview vhost if its htpasswd is present.
 4. **Drift report:** prints config drift (`scripts/config_drift.py`). Live values are kept.
 5. **Restart:** stops the worker, restarts the api (which runs migrations), waits up to 240s for it to report healthy, then starts the worker and checks it hasn't crash-looped after 10s. The worker is stopped first so no job runs against a schema mid-migration.
 6. **Verify:** checks that `GET /` reports the expected version and that `:3100` serves the dashboard, then writes `DEPLOYED_SHA`.
@@ -63,3 +63,17 @@ If a session drops mid-deploy, reattach: the deploy keeps running inside tmux. I
 
 - **`llm-config.json`:** `LLM_CONFIG_PATH` points into the state dir. At startup, keys that exist in the repo but are missing from the live file are added; existing values are never overwritten (#440). When the repo *changes* a value, the deploy's drift report shows the difference. Apply it through Settings, or edit the live file.
 - **`knowledge/glossary.md`:** the app writes to it, so it lives at `KNOWLEDGE_DIR` in the state dir and was seeded once from the repo. That keeps the git checkout clean. The deploy notes when the repo copy differs.
+
+## Public preview (Cloudflare Tunnel)
+
+`cardigan-preview.riechers.co` is the only public route to Cardigan (#485). It works in three layers:
+1. **Cloudflare Access** at the edge.
+2. **The tunnel:** the `cloudflared` connector in CT 112 (`preview01`), with ingress in `/etc/cloudflared/config.yml`, forwards to this box's `:3101`.
+3. **The origin vhost**, `nginx-cardigan-preview.conf.template`, ported from `Dockerfile.web`. It requires HTTP Basic Auth with a rate limit on password attempts, returns 403 for every config/backend write and `/mcp/`, and hides Settings in the dashboard.
+
+**On/off:**
+- The vhost is rendered only while `/etc/nginx/cardigan-preview.htpasswd` is non-empty.
+- `scripts/sync-native-secrets.sh` writes that file from `CARDIGAN_WEB_HTPASSWD` (one `user:hash` line per editor). If the secret doesn't resolve, the script **removes** the file, so a missing secret turns the vhost off.
+- Either way, the change takes effect at the next `cardigan-deploy`.
+
+**Never** give `:3100` or `:8100` a tunnel ingress. The tunnel targets an **IP**, so moving Cardigan to a new box means editing CT 112's ingress and restarting `cloudflared`.

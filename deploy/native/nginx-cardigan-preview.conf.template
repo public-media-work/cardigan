@@ -1,0 +1,113 @@
+# Hardened remote-preview vhost (:3101) — native port of the PREVIEW_HTTP /
+# PREVIEW_SERVER templates in Dockerfile.web (#485). This is what the public
+# Cloudflare Tunnel route (preview01, CT 112) points at; it sits behind
+# Cloudflare Access at the edge, and this file is the origin-side wall.
+#
+# cardigan-deploy appends this to the rendered site ONLY when
+# /etc/nginx/cardigan-preview.htpasswd exists and is non-empty (same on/off
+# rule as the image). Debian includes sites-enabled inside http {}, so the
+# http-scope directives below are valid here. Differences from the image:
+#   - listen 3101 (the image listened on 3001, published as 3101)
+#   - upstream 127.0.0.1:8100; static root /var/www/cardigan
+# Keep the write denials in step with Dockerfile.web while both exist.
+
+# ---- http scope: real client IP + auth rate-limit zone ----
+# Trust the internal hop (the tunnel connector on the LAN, or loopback) and
+# take the real client IP from X-Forwarded-For, so the rate limit is
+# per-client rather than global.
+set_real_ip_from 127.0.0.1;
+set_real_ip_from 10.0.0.0/8;
+set_real_ip_from 172.16.0.0/12;
+set_real_ip_from 192.168.0.0/16;
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+
+# Brute-force throttle for the basic-auth wall (the hostname is public).
+limit_req_zone $binary_remote_addr zone=preview_auth:10m rate=30r/s;
+
+server {
+    listen 3101;
+    listen [::]:3101;
+    server_name _;
+
+    client_max_body_size 50m;
+
+    root /var/www/cardigan;
+    index index.html;
+
+    # Per-person HTTP Basic Auth — one "user:hash" line per editor.
+    auth_basic "Cardigan Preview";
+    auth_basic_user_file /etc/nginx/cardigan-preview.htpasswd;
+
+    limit_req zone=preview_auth burst=60 nodelay;
+
+    # Inherited by proxied locations that don't declare their own headers.
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-API-Key "${CARDIGAN_API_KEY}";
+
+    # ---- Config / backend WRITE denials (reads stay open) ----
+
+    # Registering an arbitrary backend and routing a phase through it is a
+    # transcript-exfiltration path: deny the whole subtree.
+    location /api/config/backends {
+        return 403;
+    }
+
+    location = /api/config/models/refresh {
+        return 403;
+    }
+
+    location = /api/config/models {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8100;
+    }
+
+    location = /api/config/phase-backends {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8100;
+    }
+
+    location = /api/config/worker {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8100;
+    }
+
+    location = /api/ingest/config {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8100;
+    }
+
+    # SST-write MCP tools are never exposed on the public surface.
+    location /mcp/ {
+        return 403;
+    }
+
+    # ---- Producer workflow ----
+
+    location /api/ws/ {
+        proxy_pass http://127.0.0.1:8100;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-API-Key "${CARDIGAN_API_KEY}";
+        proxy_read_timeout 86400;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8100;
+    }
+
+    # SPA: inject the preview flag so the frontend hides Settings. gzip off so
+    # sub_filter can match the HTML body.
+    location / {
+        gzip off;
+        sub_filter '</head>' '<script>window.__CARDIGAN_PREVIEW__=true</script></head>';
+        sub_filter_once on;
+        try_files $uri $uri/ /index.html;
+    }
+}

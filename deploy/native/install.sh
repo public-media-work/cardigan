@@ -52,8 +52,13 @@ install -d -o cardigan -g cardigan "$APP" "$VENV" /var/log/cardigan /var/www/car
 # silently strip group write.
 if [[ -n "${CARDIGAN_DATA_GID:-}" ]]; then STATE_GROUP="$CARDIGAN_DATA_GID"; STATE_MODE=2775; STATE_FILE_MODE=0664
 else STATE_GROUP=cardigan; STATE_MODE=0755; STATE_FILE_MODE=0644; fi
-for d in "$STATE" "$STATE"/{db,output,transcripts,media,config,knowledge}; do
-  [[ -d "$d" ]] || install -d -o cardigan -g "$STATE_GROUP" -m "$STATE_MODE" "$d"
+[[ -d "$STATE" ]] || install -d -o cardigan -g "$STATE_GROUP" -m "$STATE_MODE" "$STATE"
+# Everything under $STATE is created AS the cardigan user, not root: on the
+# ZFS bind mount the dataset is root:homelab 2775 on the host, and host uid 0
+# is unmapped in the CT, so container root has no write (or DAC override)
+# there -- only members of the data group do (validated on CT 108, #470).
+for d in "$STATE"/{db,output,transcripts,media,config,knowledge}; do
+  [[ -d "$d" ]] || runuser -u cardigan -- install -d -g "$STATE_GROUP" -m "$STATE_MODE" "$d"
 done
 install -d -o root -g cardigan -m 0750 "$ETC"
 
@@ -71,7 +76,7 @@ if [[ ! -f "$ETC/cardigan.env" ]]; then
 fi
 # The glossary is written by the app; seed it once from the repo copy.
 if [[ ! -f "$STATE/knowledge/glossary.md" && -f "$APP/knowledge/glossary.md" ]]; then
-  install -o cardigan -g "$STATE_GROUP" -m "$STATE_FILE_MODE" "$APP/knowledge/glossary.md" "$STATE/knowledge/glossary.md"
+  runuser -u cardigan -- install -g "$STATE_GROUP" -m "$STATE_FILE_MODE" "$APP/knowledge/glossary.md" "$STATE/knowledge/glossary.md"
 fi
 
 echo "==> deploy command, units, nginx site"
