@@ -14,11 +14,15 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Uplo
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from api.models.bundle import Bundle, BundlePart, BundlePartUpdate
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
 from api.models.item import GenerationState, Item, ItemCategory, ItemList, ItemUpdate, Origin, ReviewState
 from api.models.job import Job, JobStatus, JobUpdate, PhaseStatus
 from api.services.airtable import AirtableClient
 from api.services.database import (
+    edit_bundle_part,
+    get_bundle_part,
+    get_bundle_parts,
     get_events_for_job,
     get_job,
     get_job_item,
@@ -27,6 +31,7 @@ from api.services.database import (
     update_job,
     update_job_item,
 )
+from api.services.generation import runner as generation_runner
 
 logger = logging.getLogger(__name__)
 
@@ -932,7 +937,9 @@ async def list_job_items(
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     include_values = include == "values"
-    items = await get_job_items(job_id, include_values=include_values)
+    items = generation_runner.mark_stale(
+        await get_job_items(job_id, include_values=include_values), await get_bundle_parts(job_id)
+    )
 
     if category is not None:
         items = [item for item in items if item.category == category]
@@ -955,6 +962,7 @@ async def list_job_items(
             "by_category": _count(items, "category"),
             "edited": sum(1 for item in items if item.edited_value is not None),
             "affirmed": sum(1 for item in items if item.is_affirmation()),
+            "stale": sum(1 for item in items if item.stale),
             "flagged": sum(1 for item in items if item.has_errors()),
         },
     )
@@ -966,7 +974,16 @@ async def get_single_job_item(job_id: int, key: str):
     item = await get_job_item(job_id, key)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Item '{key}' not found on job {job_id}")
-    return item
+    return generation_runner.mark_stale([item, *await _dependency_items(job_id, item)], await get_bundle_parts(job_id))[
+        0
+    ]
+
+
+async def _dependency_items(job_id: int, item: Item) -> list[Item]:
+    """The items this one recorded reading — needed to judge it stale."""
+    keys = (item.input_revisions or {}).get("items") or {}
+    found = [await get_job_item(job_id, key) for key in keys]
+    return [dep for dep in found if dep is not None]
 
 
 @router.patch("/{job_id}/items/{key}", response_model=Item)
@@ -992,3 +1009,77 @@ async def patch_job_item(job_id: int, key: str, body: ItemUpdate):
         },
     )
     return item
+
+
+# ============================================================================
+# Generation: the context bundle and re-runs (#427)
+# ============================================================================
+
+
+def _llm():
+    from api.services.llm import get_llm_client
+
+    client = get_llm_client()
+    client.reload_config()
+    return client
+
+
+@router.post("/{job_id}/items/{key}/regenerate", response_model=Item)
+async def regenerate_job_item(job_id: int, key: str):
+    """Re-run one item's generator against the job's current bundle.
+
+    Only that item is re-run. Items that depend on it show as stale and get
+    their own re-run; nothing cascades on its own.
+    """
+    if await get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if key not in generation_runner.GENERATORS_BY_ITEM:
+        raise HTTPException(status_code=409, detail=f"Item '{key}' has no generator yet")
+    llm = _llm()
+    return await generation_runner.regenerate_item(job_id, key, llm=llm, llm_config=llm.config)
+
+
+@router.get("/{job_id}/bundle", response_model=Bundle)
+async def get_job_bundle(job_id: int):
+    """The job's context bundle: every slice, each labelled deterministic or
+    inferred, with the builder's content and any correction."""
+    if await get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    parts = await get_bundle_parts(job_id)
+    order = [spec.slice for spec in generation_runner.SLICE_ORDER]
+    parts.sort(key=lambda part: order.index(part.slice) if part.slice in order else len(order))
+    return Bundle(job_id=job_id, parts=parts, total=len(parts))
+
+
+@router.get("/{job_id}/bundle/{slice_name}", response_model=BundlePart)
+async def get_job_bundle_part(job_id: int, slice_name: str):
+    part = await get_bundle_part(job_id, slice_name)
+    if part is None:
+        raise HTTPException(status_code=404, detail=f"Slice '{slice_name}' not found on job {job_id}")
+    return part
+
+
+@router.patch("/{job_id}/bundle/{slice_name}", response_model=BundlePart)
+async def patch_job_bundle_part(job_id: int, slice_name: str, body: BundlePartUpdate):
+    """Correct one slice. The correction wins over the builder's content, a
+    rebuild never overwrites it, and every item built on the old revision
+    shows as stale. Send ``edited_content: null`` to clear it."""
+    part = await edit_bundle_part(job_id, slice_name, body.edited_content)
+    if part is None:
+        raise HTTPException(status_code=404, detail=f"Slice '{slice_name}' not found on job {job_id}")
+    logger.info("Bundle slice corrected", extra={"job_id": job_id, "slice": slice_name, "revision": part.revision})
+    return part
+
+
+@router.post("/{job_id}/bundle/{slice_name}/rebuild", response_model=BundlePart)
+async def rebuild_job_bundle_part(job_id: int, slice_name: str):
+    """Re-run one slice builder. A correction survives it."""
+    if await get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if slice_name not in generation_runner.SLICES_BY_NAME:
+        raise HTTPException(status_code=404, detail=f"Unknown slice '{slice_name}'")
+    llm = _llm()
+    try:
+        return await generation_runner.rebuild_slice(job_id, slice_name, llm=llm, llm_config=llm.config)
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err

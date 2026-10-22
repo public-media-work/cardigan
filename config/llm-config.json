@@ -183,10 +183,13 @@
       },
       "qa_gate": {"merge_flags": true, "fail_on_error": true}
     },
-    "items": {
-      "enabled": false,
-      "copy_generation": true,
-      "_comment": "Item extraction (#426). OFF in prod until the job page exists. When on, a completed job extracts its outputs into job_items and looks up its SST record — that AirTable read per completed job is the only prod-visible side effect. Flip to true on the dev instance. copy_generation=false keeps copy items (titles, descriptions) as unavailable/copy_generation_off: they still show the current SST text and take a hand edit, but nothing is generated."
+    "generation": {
+      "engine": "v4",
+      "copy_generation": "suggest",
+      "backend": null,
+      "generators": {},
+      "slices": {},
+      "_comment": "V5 engine (#427). engine=v4 runs the phase pipeline (cardigan02); engine=items runs the context bundle and one generator per item instead (dev, and the rebuilt cardigan01). copy_generation: off | review | suggest; a job can override it. generators.<item> and slices.<slice> override a unit's code defaults: model, backend, max_cost_usd, max_output_tokens, enabled."
     }
   },
   "model_families": [
