@@ -27,7 +27,7 @@ Don't open with a questionnaire. State the defaults in one short message and sta
 | Setting | Default | Change it when |
 |---|---|---|
 | **Code under test** | Latest `origin/main`, no PRs. `code` fetches before exporting. | The operator names PRs to stack. If they want PRs **landed** first, land them before step 1, so the code under test is main again. |
-| **Backend** | Subagent per phase. After one identical retry of a classifier stop, fall back to OpenRouter `replay --newest` for that phase. That costs about $0.10–0.30 a phase, and the default covers it. | The operator says no paid calls (then stop and ask at the first stop) or OpenRouter for everything. |
+| **Backend** | Subagent per phase. After one identical retry of a classifier stop, fall back to OpenRouter `replay --newest` for that phase. On 6POL0216 (Oct 2026, sonnet-5.5, 19 min) that cost $0.22 for the formatter and $0.07 for timestamp. The default covers it. | The operator says no paid calls (then stop and ask at the first stop) or OpenRouter for everything. |
 | **Media ID** | The caption file's stem when it looks like one (`6POL0217.srt` → `6POL0217`). `sst --live` confirms it; no record means none. | Archival or ad-hoc files (`Ojibwe_Music.srt`) have no media ID. |
 | **Write-up** | Private only: the cohort goes to the private repo. Ask before filing issues, commenting on PRs or opening a public docs PR. | The operator asks for issues or a docs PR up front. |
 
@@ -71,7 +71,7 @@ Use one command per Bash call, with literal absolute paths: no shell variables, 
    - Expect this on Sonnet/Opus 5.x subagents writing a long full-transcript result (formatter, timestamp). On 6POL0216 every such run stopped with `stop_details.category: "reasoning_extraction"`, Anthropic's anti-distillation safeguard. Haiku and OpenRouter calls were not affected.
    - The UI notice hides the category. Find it in the subagent's JSONL (`~/.claude/projects/<slug>/<session>/subagents/agent-*.jsonl`) by searching for `stop_details`, and record the category and the request ID verbatim in RUNLOG, along with the transcript path.
    - At most **one identical** retry. If it stops again, fall back to OpenRouter for that phase under the default backend. If the operator ruled out paid calls, ask instead. Don't escalate a subagent to Opus to get past a stop: on 6POL0216, Opus 5.5 was stopped the same way after 96 s.
-   - Plan for it: on Sonnet-tier formatter and timestamp, a stop is the likely outcome, not the exception. Dispatch the subagent once with its identical retry, then go straight to `replay` rather than spending more time.
+   - On 6POL0216, every Sonnet-tier formatter and timestamp run that held most of the transcript was stopped; only the last-third chunk got through (before the round-3 brief rewording, which has not yet faced a long transcript). Dispatch once plus its identical retry, then go straight to `replay` rather than spending more time. Update this line with what the next run shows.
    - **Never reword, summarise, split or re-chunk the input or the brief to get past a stop.** That is evading the classifier, not retrying, and it would also no longer test prod's prompt. If the subagent path needs to work for these phases, the route is Anthropic support with the request IDs.
    - Fallback: `harness.py replay --run-dir <unit> <phase> [--chunk N] [--newest]` sends the captured prompt unchanged. `--newest` picks the family's newest model through prod's roster. It sends the captured `max_tokens` and a reasoning control **only if the code under test passed one**: plain main sends none, and #409 adds `{enabled: false}` for the formatter. `notes` says when none was captured. Read `replay/telemetry.json`: `finish_reason` (`length` means truncated), `reasoning_tokens` and `headroom_tokens`, plus `notes`. Some newer models reject a disabled-reasoning control with a 400. `replay` then resends with reasoning on and records that in `notes`, which is a finding.
      - Mark wants `--newest`, the family's newest model, for replays unless he says otherwise. In Oct 2026 that was `anthropic/claude-sonnet-5.5`, which **requires** reasoning on (#465), so expect the 400-and-resend on every formatter replay from a stack that disables reasoning.
@@ -96,9 +96,9 @@ Known, unfiled-as-new: `{model name you are running as}` is left unfilled becaus
 
 ## Full local worker run
 
-This mode runs the real API and worker against a throwaway database, so the job goes through prod's whole path. First used on 2WLIGrizzWorksSM, 2026-10-21. It makes paid OpenRouter calls through prod's routing. Say so when you announce the defaults. A short program costs cents; a half-hour episode can cost about $1.
+This mode runs the real API and worker against a throwaway database, so the job goes through prod's whole path. First used on 2WLIGrizzWorksSM, 2026-10-21. It makes paid OpenRouter calls through prod's routing. Say so when you announce the defaults. Read the cost from the job row's `actual_cost` and report it.
 
-1. **Code.** `harness.py code --dest <cohort>/_code-main`, with `--prs` for a stack, as in step 1 below. The tree has no venv, so use the main checkout's.
+1. **Code.** `harness.py code --dest <cohort>/_code-main`, with `--prs` for a stack, as in step 1 above. The tree has no venv, so use the main checkout's.
 2. **Unit.** Make `<cohort>/<label>-full/transcripts/` and copy or download the SRT into it.
    - If the job already exists on prod, its exact transcript is on the host: `scp cardigan01:<transcripts dir>/archive/<file>.srt`. The prod path changes with the deploy (Docker volume vs. native state dir), so look it up, don't assume it.
    - The API serves only outputs, not the source file.
@@ -106,7 +106,7 @@ This mode runs the real API and worker against a throwaway database, so the job 
    `DATABASE_PATH=<unit>/run.db OUTPUT_DIR=<unit>/OUTPUT TRANSCRIPTS_DIR=<unit>/transcripts <main checkout>/venv/bin/uvicorn api.main:app --port 8199 --app-dir <code tree>`
    - Port 8199 keeps it clear of a dev server on 8100.
    - `init_db` creates the schema, so no alembic step is needed.
-   - Keys come from the app's own `api.services.secrets` (Docker secret, then env, then Keychain on Mark's Mac), so don't export anything.
+   - Keys come from the app's own `api.services.secrets`: Docker secret, then env, then a Keychain fallback that prints a deprecation notice on Mark's Mac. That is how the 2026-10-21 run got them. If the API or worker can't resolve a key, flag it to the operator. Don't paste or hard-code a key.
    - The ingest and mmingest schedulers start too. They only index mmingest into the throwaway DB and never queue jobs.
 4. **Worker.** Also in the background, with the same three env vars and the code tree as cwd: `<main checkout>/venv/bin/python run_worker.py --poll-interval 5 --concurrent 1`.
 5. **Queue.** `curl -s -X POST http://localhost:8199/api/queue/ -H 'Content-Type: application/json' -d '{"project_name":"<label>","transcript_file":"<file>.srt"}'`. The worker resolves the media ID from the file name, and SST is read live, read-only.

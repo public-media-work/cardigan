@@ -221,7 +221,10 @@ def cmd_setup(a):
 
 
 def _secret(name):
-    r = subprocess.run(["get-secret.sh", name], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["get-secret.sh", name], capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit(f"could not resolve {name}: get-secret.sh is not on PATH")
     key = r.stdout.strip()
     if r.returncode != 0 or not key:
         sys.exit(f"could not resolve {name} via get-secret.sh (is it on PATH?)")
@@ -294,7 +297,10 @@ def cmd_sst(a):
             sys.exit("--live fetches the records itself; drop --record/--project")
         if not job.get("media_id"):
             sys.exit("--live needs a media ID: re-run `setup` with --media-id, or run `sst` with no files")
-        os.environ.setdefault("AIRTABLE_API_KEY", _secret("AIRTABLE_API_KEY"))
+        for stale in ("sst_record.json", "sst_project.json"):
+            (run.dir / stale).unlink(missing_ok=True)
+        if not os.environ.get("AIRTABLE_API_KEY"):  # get-secret.sh owns resolution on this machine
+            os.environ["AIRTABLE_API_KEY"] = _secret("AIRTABLE_API_KEY")
         live = ReadOnlyAirtable(wm.get_airtable_client(), run.dir)
         with mock.patch.object(wm, "get_airtable_client", lambda: live):
             ctx = asyncio.run(wm.JobWorker()._fetch_sst_context(job))
