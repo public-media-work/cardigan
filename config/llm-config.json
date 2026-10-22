@@ -182,6 +182,11 @@
         "timestamp": {"pre": true, "post": "off"}
       },
       "qa_gate": {"merge_flags": true, "fail_on_error": true}
+    },
+    "items": {
+      "enabled": false,
+      "copy_generation": true,
+      "_comment": "Item extraction (#426). OFF in prod until the job page exists. When on, a completed job extracts its outputs into job_items and looks up its SST record — that AirTable read per completed job is the only prod-visible side effect. Flip to true on the dev instance. copy_generation=false keeps copy items (titles, descriptions) as unavailable/copy_generation_off: they still show the current SST text and take a hand edit, but nothing is generated."
     }
   },
   "model_families": [

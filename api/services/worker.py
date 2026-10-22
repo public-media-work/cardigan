@@ -1363,6 +1363,23 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # starts a fresh capacity-wait ceiling rather than inheriting this one.
                 await clear_defer_state(job_id)
 
+                # Extract the job's items (#426). Kill-switched by default
+                # (routing.items in config/llm-config.json) so this is inert in
+                # prod until the job page exists — the SST lookup it performs
+                # is the only prod-visible side effect. Non-fatal either way:
+                # a job that produced good output must not be marked failed
+                # because extraction had a bad day.
+                if self.llm.config.get("routing", {}).get("items", {}).get("enabled"):
+                    try:
+                        from api.services.item_sync import refresh_job_items
+
+                        await refresh_job_items(job_id, llm_config=self.llm.config)
+                    except Exception as item_err:
+                        logger.warning(
+                            "Failed to extract job items (non-fatal)",
+                            extra={"job_id": job_id, "error": str(item_err)},
+                        )
+
                 # Archive the transcript file (non-fatal if this fails). Only on
                 # completion — a paused job may be reviewed/retried and still needs
                 # its source transcript, so we must NOT move it away on pause.
