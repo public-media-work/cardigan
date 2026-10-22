@@ -227,8 +227,9 @@ class Item(BaseModel):
         return bool(self.basis_value and self.basis_value.strip())
 
     def has_errors(self) -> bool:
-        """Advisory only — never consulted as a gate."""
-        return any(flag.severity == "error" for flag in self.flags)
+        """Advisory only — never consulted as a gate. Flags on the basis are
+        the editor's to weigh, so only flags on Cardigan's own text count."""
+        return any(flag.severity == "error" and flag.target != FlagTarget.basis for flag in self.flags)
 
 
 class ItemUpdate(BaseModel):

@@ -414,6 +414,20 @@ class TestFlagProvenance:
 
         assert flag["target"] == "basis"
 
+    def test_a_malformed_generator_flag_drops_alone(self):
+        good = {"check": "accuracy", "rule_id": "a.1", "severity": "warning", "message": "m"}
+        bad_target = {**good, "target": "both"}
+        missing = {"check": "accuracy"}
+        proposals = {
+            "short_description": Proposal(
+                value="x" * 500, origin=Origin.inferred, generator="g", flags=(bad_target, good, missing)
+            )
+        }
+
+        flags = by_key(build_items(job_id=1, proposals=proposals))["short_description"]["flags"]
+
+        assert [(f["check"], f["origin"]) for f in flags] == [("accuracy", "model"), ("char_limit", "code")]
+
 
 class TestAlternatives:
     def test_alternatives_carry_code_measured_limit_flags(self):

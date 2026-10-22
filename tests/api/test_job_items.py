@@ -295,6 +295,37 @@ async def test_flags_written_before_provenance_still_read(job):
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_stored_entry_drops_alone(job):
+    good = {"check": "char_limit", "rule_id": "char_limit.max", "severity": "error", "message": "m"}
+    rows = rows_for(job.id)
+    for row in rows:
+        if row["key"] == "title":
+            row["flags"] = [{**good, "target": "both"}, good, "not a flag"]
+            row["alternatives"] = [
+                {"value": "Kept", "angle": "place", "flags": [{"check": "x"}, good]},
+                {"angle": "no value"},
+            ]
+    await upsert_job_items(job.id, rows)
+
+    item = await get_job_item(job.id, "title")
+    assert [flag.rule_id for flag in item.flags] == ["char_limit.max"]
+    assert [(alt.value, len(alt.flags)) for alt in item.alternatives] == [("Kept", 1)]
+
+
+@pytest.mark.asyncio
+async def test_flags_on_the_basis_do_not_count_as_errors(job):
+    rows = rows_for(job.id)
+    for row in rows:
+        if row["key"] == "title":
+            row["flags"] = [
+                {"check": "char_limit", "rule_id": "r", "severity": "error", "message": "m", "target": "basis"}
+            ]
+    await upsert_job_items(job.id, rows)
+
+    assert not (await get_job_item(job.id, "title")).has_errors()
+
+
+@pytest.mark.asyncio
 async def test_update_unknown_item_returns_none(job):
     assert await update_job_item(job.id, "nope", ItemUpdate(review_state=ReviewState.accepted)) is None
 

@@ -1686,24 +1686,48 @@ async def delete_job_items(job_id: int) -> int:
         return result.rowcount or 0
 
 
+def _parse_each(blob: Optional[str], parse) -> list:
+    """Parse a JSON list one entry at a time, skipping entries that don't fit.
+
+    Flags and alternatives are advisory and never gate anything, so a
+    malformed entry must not make the item unreadable — nor take its
+    well-formed neighbours (the code-measured char_limit flags among them)
+    down with it.
+    """
+    if not blob:
+        return []
+    try:
+        entries = json.loads(blob)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [parsed for parsed in (parse(entry) for entry in entries) if parsed is not None]
+
+
+def _parse_flag(entry) -> Optional[ItemFlag]:
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return ItemFlag(**entry)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_alternative(entry) -> Optional[ItemAlternative]:
+    if not isinstance(entry, dict):
+        return None
+    flags = [flag for flag in (_parse_flag(f) for f in entry.get("flags") or []) if flag is not None]
+    try:
+        return ItemAlternative(**{**entry, "flags": flags})
+    except (TypeError, ValueError):
+        return None
+
+
 def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
     """Convert a database row to an Item model."""
-    flags: List[ItemFlag] = []
-    if row.flags:
-        try:
-            flags = [ItemFlag(**flag) for flag in json.loads(row.flags)]
-        except (json.JSONDecodeError, TypeError, ValueError):
-            # A malformed flags blob must not make the item unreadable —
-            # flags are advisory and never gate anything.
-            flags = []
-
-    alternatives: List[ItemAlternative] = []
-    if row.alternatives:
-        try:
-            alternatives = [ItemAlternative(**alt) for alt in json.loads(row.alternatives)]
-        except (json.JSONDecodeError, TypeError, ValueError):
-            # Same rule as flags: the proposal must stay readable.
-            alternatives = []
+    flags = _parse_each(row.flags, _parse_flag)
+    alternatives = _parse_each(row.alternatives, _parse_alternative)
 
     def _maybe(value: Optional[str]) -> Optional[str]:
         if not include_values and value is not None and len(value) > large:

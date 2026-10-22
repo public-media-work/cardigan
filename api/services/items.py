@@ -32,6 +32,7 @@ from api.models.item import (
     FlagTarget,
     GenerationState,
     ItemCategory,
+    ItemFlag,
     Origin,
     ReviewState,
 )
@@ -504,10 +505,23 @@ def _char_limit_flags(
 
 def _model_flags(flags: tuple[Mapping[str, Any], ...], default_target: FlagTarget) -> list[dict[str, Any]]:
     """Stamp a generator's own findings as model-raised. Origin is not the
-    generator's to claim; target defaults to what the flag came attached to."""
-    return [
-        {**flag, "origin": FlagOrigin.model.value, "target": flag.get("target", default_target.value)} for flag in flags
-    ]
+    generator's to claim; target defaults to what the flag came attached to.
+
+    Each flag is validated on its own. A malformed one is dropped and logged,
+    so it can't take the well-formed flags — or the code-measured ones stored
+    beside them — down with it.
+    """
+    stamped: list[dict[str, Any]] = []
+    for flag in flags:
+        try:
+            valid = ItemFlag(
+                **{**flag, "origin": FlagOrigin.model.value, "target": flag.get("target", default_target.value)}
+            )
+        except (TypeError, ValueError) as err:
+            logger.warning("Dropping malformed generator flag %r: %s", flag, err)
+            continue
+        stamped.append(valid.model_dump(mode="json"))
+    return stamped
 
 
 def _alternatives(candidates: tuple[Candidate, ...], limit: CharLimit, key: str) -> list[dict[str, Any]]:
