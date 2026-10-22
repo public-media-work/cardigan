@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,9 @@ DEFAULT_REASONING_RESERVE = 8000
 
 # Upper bound on any single HTTP call; per-backend ``timeout`` values sit below it.
 HTTP_TIMEOUT_CEILING_S = 600.0
+
+# Per-job alias pins kept in memory; older jobs' pins are dropped first.
+MAX_PINNED_JOBS = 64
 
 
 def _reasoning_off_requested(payload: Dict[str, Any]) -> bool:
@@ -737,6 +741,41 @@ class LLMClient:
 
         return backends[backend_name]
 
+    def reset_job_models(self, job_id: Optional[int]) -> None:
+        """Forget a job's alias pins so this run resolves afresh (called at job start).
+
+        A retry is a new run: it should get whatever the alias points at now, not
+        what it pointed at during an earlier attempt.
+        """
+        self.__dict__.setdefault("_job_model_pins", OrderedDict()).pop(job_id, None)
+
+    async def resolve_model_id(self, model_id: Optional[str], job_id: Optional[int] = None) -> Optional[str]:
+        """Concrete model id for ``model_id``; a pinned id passes through unchanged.
+
+        An OpenRouter alias resolves once per job and stays pinned for that job,
+        so every chunk, retry and re-validate runs on the same model even if the
+        alias moves mid-job. None if the alias has never resolved (the caller then
+        falls back to the backend's model).
+        """
+        from api.services import model_roster
+
+        if not model_roster.is_model_alias(model_id):
+            return model_id
+        pins = self.__dict__.setdefault("_job_model_pins", OrderedDict())
+        job_pins = pins.get(job_id) if job_id is not None else None
+        if job_pins and model_id in job_pins:
+            return job_pins[model_id]
+        resolved = await model_roster.resolve_alias(model_id)
+        if resolved is None:
+            logger.warning("Model alias %s did not resolve; using the backend's model", model_id)
+            return None
+        if job_id is not None:
+            pins.setdefault(job_id, {})[model_id] = resolved
+            pins.move_to_end(job_id)
+            while len(pins) > MAX_PINNED_JOBS:
+                pins.popitem(last=False)
+        return resolved
+
     async def reasoning_reserve(self, model: Optional[str]) -> int:
         """Output tokens to hold back for reasoning that can't be switched off.
 
@@ -822,6 +861,12 @@ class LLMClient:
             model_id = phase_models.get(phase)
         else:
             model_id = None
+
+        # An alias ("~anthropic/claude-sonnet-latest") becomes the concrete id it
+        # points at, pinned for the rest of the job; everything downstream (guards,
+        # cost, phase rows, Langfuse) sees only the concrete id (#499).
+        if model_id:
+            model_id = await self.resolve_model_id(model_id, job_id)
 
         if not model_id:
             model_id = _resolve_model(backend_config) or backend_config.get("fallback_model")
