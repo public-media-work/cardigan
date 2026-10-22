@@ -1514,7 +1514,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
         from api.services.utils import get_srt_duration, parse_srt
 
         duration = None
-        if context.get("transcript_file", "").lower().endswith(".srt"):
+        if (context.get("transcript_file") or "").lower().endswith(".srt"):
             duration = format_duration(get_srt_duration(parse_srt(context.get("transcript", ""))) / 60000)
         return {
             "Project": context.get("project_name"),

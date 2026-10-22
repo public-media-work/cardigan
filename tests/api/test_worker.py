@@ -1313,6 +1313,11 @@ class TestChunkHeaderFields:
         assert fields["Duration"] is None
         assert fields["Program"] is None
 
+    def test_none_transcript_file_does_not_raise(self):
+        """A present-but-None transcript_file must not fail the merge (#421 review)."""
+        fields = self._worker()._chunk_header_fields({"project_name": "X", "transcript_file": None})
+        assert fields["Duration"] is None
+
 
 class TestTruncationMessage:
     """#405: the truncation pause promised an escalation no code path performed.
