@@ -1288,6 +1288,7 @@ class TestChunkedFormatterStylePre:
 
         mock_llm_client.chat = fake_chat
         mock_llm_client.reasoning_reserve = AsyncMock(return_value=0)
+        mock_llm_client.resolve_model_id = AsyncMock(side_effect=lambda model_id, job_id=None: model_id)
         mock_log_event.return_value = None
         mock_agents_dir.__truediv__ = lambda self, name: tmp_path / name
 
