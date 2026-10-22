@@ -1,0 +1,13 @@
+{
+  "_comment": "Values config/llm-config.json used to ship. At startup, a live config still holding one of these at the given path is moved to the current default; any other value is a deliberate change and is left alone. Add an entry whenever a shipped default changes value. See api/services/config_path.py apply_superseded_defaults.",
+  "superseded": [
+    {"path": ["phase_models", "analyst"], "was": ["anthropic/claude-haiku-4.5"], "since": "#499"},
+    {"path": ["phase_models", "formatter"], "was": ["anthropic/claude-sonnet-4.6"], "since": "#499"},
+    {"path": ["phase_models", "seo"], "was": ["anthropic/claude-haiku-4.5", "anthropic/claude-sonnet-4.6"], "since": "#499"},
+    {"path": ["phase_models", "validator"], "was": ["anthropic/claude-haiku-4.5"], "since": "#499"},
+    {"path": ["phase_models", "timestamp"], "was": ["anthropic/claude-sonnet-4.6"], "since": "#499"},
+    {"path": ["phase_models", "copy_editor"], "was": ["anthropic/claude-opus-4.6"], "since": "#499"},
+    {"path": ["backends", "openrouter", "max_tokens"], "was": [16384], "since": "#499"},
+    {"path": ["backends", "openrouter", "timeout"], "was": [180], "since": "#499"}
+  ]
+}

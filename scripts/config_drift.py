@@ -16,6 +16,7 @@ Usage
 """
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -55,11 +56,26 @@ def main() -> int:
         print(f"Config drift: none ({live_path} matches {default_path} on every shared key).")
         return 0
 
+    # Values still at an old shipped default move to the new one when the
+    # services next start (apply_superseded_defaults); say so, so the deploy
+    # doesn't present them as kept.
+    moving = {
+        path
+        for path, _, _ in config_path.apply_superseded_defaults(
+            copy.deepcopy(live), default, config_path.load_superseded()
+        )
+    }
+
     print(f"Config drift: {len(drift)} value(s) in {live_path} differ from {default_path}:")
     for path, live_value, default_value in drift:
-        print(f"  {path}: live={json.dumps(live_value)}  repo={json.dumps(default_value)}")
-    print("Live values are kept. Change one through Settings or edit the live file if the repo value should win.")
-    return 1 if args.strict else 0
+        note = "  (old default: moves to the repo value at restart)" if path in moving else ""
+        print(f"  {path}: live={json.dumps(live_value)}  repo={json.dumps(default_value)}{note}")
+    if len(moving) < len(drift):
+        print(
+            "Other live values are kept. Change one through Settings or edit the live file if the repo value should win."
+        )
+    remaining = len(drift) - len(moving)
+    return 1 if args.strict and remaining else 0
 
 
 if __name__ == "__main__":
