@@ -142,12 +142,40 @@ class AvailableModel(BaseModel):
     context_len: Optional[int] = Field(None, description="Max context length if the server advertises it")
 
 
+class ModelAlias(BaseModel):
+    """A moving "latest in family" choice (an OpenRouter alias), with its current target (#499)."""
+
+    id: str = Field(..., description="Alias to store in phase_models, e.g. '~anthropic/claude-sonnet-latest'")
+    name: str = Field(..., description="Human-readable label, e.g. 'Latest Claude Sonnet'")
+    family: str = Field(..., description="Model family: haiku, sonnet or opus")
+    resolves_to: Optional[str] = Field(None, description="Concrete model id it points at now; null if unknown")
+
+
 class PhaseModelsResponse(BaseModel):
     """Response with current phase-to-model assignments and available models."""
 
-    phase_models: Dict[str, str] = Field(..., description="Current model ID assigned to each phase")
+    phase_models: Dict[str, str] = Field(..., description="Current model ID or alias assigned to each phase")
     available_models: List[AvailableModel] = Field(..., description="All models available for selection")
     available_phases: List[str] = Field(..., description="All configurable phases")
+    model_aliases: List[ModelAlias] = Field(
+        default_factory=list, description="'Latest in family' choices and what each resolves to now"
+    )
+
+
+# Families offered as "latest" choices, cheapest first (matches qa_escalation.family_order).
+ALIAS_FAMILIES = ("haiku", "sonnet", "opus")
+
+
+async def _model_aliases() -> List[ModelAlias]:
+    return [
+        ModelAlias(
+            id=model_roster.family_alias(family),
+            name=f"Latest Claude {family.capitalize()}",
+            family=family,
+            resolves_to=await model_roster.resolve_alias(model_roster.family_alias(family)),
+        )
+        for family in ALIAS_FAMILIES
+    ]
 
 
 class PhaseModelsUpdate(BaseModel):
@@ -192,6 +220,7 @@ async def get_phase_models():
         phase_models=phase_models,
         available_models=available_models,
         available_phases=available_phases,
+        model_aliases=await _model_aliases(),
     )
 
 
@@ -220,7 +249,13 @@ async def update_phase_models(update: PhaseModelsUpdate):
             raise HTTPException(
                 status_code=400, detail=f"Invalid phase: {phase}. Valid phases: {', '.join(sorted(valid_phases))}"
             )
-        if available_model_ids and model_id not in available_model_ids:
+        if model_roster.is_model_alias(model_id):
+            # A "latest" alias is valid when it resolves now (or resolved before).
+            if not await model_roster.resolve_alias(model_id):
+                raise HTTPException(
+                    status_code=400, detail=f"Unknown model alias: {model_id}. The model catalog doesn't list it."
+                )
+        elif available_model_ids and model_id not in available_model_ids:
             raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}. Check available_models in config.")
 
     # Merge with existing (partial update)
