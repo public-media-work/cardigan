@@ -240,3 +240,40 @@ def test_classify_still_skips_genuinely_unfixable_flags():
     for flag in ("Media ID could not be determined", "Speaker remains unidentified", "SEMrush data unavailable"):
         out = classify_qa_failure(_vr(formatter_flags=[flag]), {})
         assert out["escalate"] is False, f"{flag!r} must stay non-fixable"
+
+
+def test_escalated_rerun_refreshes_tokens_not_just_model_and_cost():
+    """Job 26: escalated SEO showed sonnet-5.5 but the first pass's token counts (#500)."""
+    from api.models.job import JobPhase
+    from api.services.worker import _escalated_phase_info, apply_escalated_phase_models
+
+    rerun = {
+        "success": True,
+        "model": "anthropic/claude-sonnet-5.5",
+        "cost": 0.10,
+        "tokens": 18469,
+        "input_tokens": 10384,
+        "output_tokens": 8085,
+    }
+    phases = [
+        {"name": "seo", "model": "anthropic/claude-haiku-4.5", "cost": 0.03, "tokens": 14867, "output_tokens": 4483},
+        JobPhase(name="timestamp", model="anthropic/claude-sonnet-4.6", tokens=17889, output_tokens=419),
+        {"name": "analyst", "model": "anthropic/claude-haiku-4.5", "tokens": 24240},
+    ]
+    escalated = {
+        "seo": _escalated_phase_info(rerun),
+        "timestamp": _escalated_phase_info({"cost": 0.03, "tokens": 23528, "output_tokens": 2249}, "anthropic/x"),
+    }
+
+    out = apply_escalated_phase_models(phases, escalated)
+
+    assert out[0] == {
+        "name": "seo",
+        "model": "anthropic/claude-sonnet-5.5",
+        "cost": 0.10,
+        "tokens": 18469,
+        "input_tokens": 10384,
+        "output_tokens": 8085,
+    }
+    assert (out[1].model, out[1].tokens, out[1].output_tokens) == ("anthropic/x", 23528, 2249)
+    assert out[2] == {"name": "analyst", "model": "anthropic/claude-haiku-4.5", "tokens": 24240}

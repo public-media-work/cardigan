@@ -134,3 +134,73 @@ async def test_newest_in_family_picks_newest_excludes_variants():
 async def test_newest_in_family_none_on_fetch_failure():
     with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
         assert await model_roster.newest_in_family("opus", ["fast"]) is None
+
+
+@pytest.mark.asyncio
+async def test_newest_in_family_skips_batch_twin():
+    """Every model has a ``:batch`` twin with the same ``created`` stamp (#465)."""
+    raw = [
+        {"id": "anthropic/claude-sonnet-5.5:batch", "created": 300},
+        {"id": "anthropic/claude-sonnet-5.5", "created": 300},
+        {"id": "anthropic/claude-sonnet-4.6", "created": 200},
+    ]
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=raw)):
+        assert await model_roster.newest_in_family("sonnet", ["fast", "fable"]) == "anthropic/claude-sonnet-5.5"
+
+
+CATALOG = [
+    {
+        "id": "anthropic/claude-sonnet-5.5",
+        "reasoning": {"mandatory": True, "supported_efforts": ["max", "xhigh", "high", "medium", "low"]},
+    },
+    {
+        "id": "anthropic/claude-sonnet-4.6",
+        "reasoning": {"mandatory": False, "supported_efforts": ["max", "high", "medium", "low", "none"]},
+    },
+    {"id": "anthropic/claude-haiku-4.5"},
+]
+
+
+@pytest.fixture
+def fresh_catalog_cache():
+    model_roster.invalidate_cache()
+    yield
+    model_roster.invalidate_cache()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_caps_reads_catalog(fresh_catalog_cache):
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=CATALOG)):
+        caps = await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5")
+        assert caps["mandatory"] is True
+        assert await model_roster.reasoning_caps("anthropic/claude-haiku-4.5") == {}
+        assert await model_roster.reasoning_caps("anthropic/not-listed") is None
+        assert await model_roster.reasoning_caps(None) is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_is_cached_and_survives_a_failed_refresh(fresh_catalog_cache):
+    fetch = AsyncMock(return_value=CATALOG)
+    with patch.object(model_roster, "fetch_openrouter_models", fetch):
+        await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5")
+        await model_roster.reasoning_caps("anthropic/claude-sonnet-4.6")
+    assert fetch.await_count == 1
+
+    model_roster._catalog_cache["expires"] = 0.0  # force a refresh, which fails
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
+        caps = await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5")
+    assert caps["mandatory"] is True
+
+
+@pytest.mark.asyncio
+async def test_reasoning_caps_none_without_catalog(fresh_catalog_cache):
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
+        assert await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5") is None
+
+
+def test_lowest_reasoning_effort_skips_none():
+    assert model_roster.lowest_reasoning_effort(CATALOG[0]["reasoning"]) == "low"
+    assert model_roster.lowest_reasoning_effort(CATALOG[1]["reasoning"]) == "low"
+    assert model_roster.lowest_reasoning_effort({"supported_efforts": ["high", "minimal"]}) == "minimal"
+    assert model_roster.lowest_reasoning_effort({}) is None
+    assert model_roster.lowest_reasoning_effort(None) is None
