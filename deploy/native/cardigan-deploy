@@ -31,6 +31,8 @@ API=http://127.0.0.1:8100
 PROVENANCE="$APP/DEPLOYED_SHA"     # last successful deploy only
 LAST_ATTEMPT="$APP/LAST_ATTEMPT"   # every run that changed something, ok or failed
 SITE=/etc/nginx/sites-available/cardigan
+# Read by nginx workers (www-data) per request, so it lives outside /etc/cardigan.
+PREVIEW_HTPASSWD=/etc/nginx/cardigan-preview.htpasswd
 
 # Refused before anything changed: no rollback hint, and LAST_ATTEMPT is left
 # alone so it still describes the last real attempt.
@@ -153,6 +155,17 @@ case "$CARDIGAN_API_KEY" in
 esac
 CARDIGAN_API_KEY="$CARDIGAN_API_KEY" envsubst '${CARDIGAN_API_KEY}' \
   < deploy/native/nginx-cardigan.conf.template > "$SITE.new"
+# The public preview vhost (:3101, the Cloudflare Tunnel target, #485) is on
+# only while a non-empty htpasswd is present — the same rule as the image.
+# Removing the file (or syncing without CARDIGAN_WEB_HTPASSWD) turns it off on
+# the next deploy.
+if [[ -s "$PREVIEW_HTPASSWD" ]]; then
+  CARDIGAN_API_KEY="$CARDIGAN_API_KEY" envsubst '${CARDIGAN_API_KEY}' \
+    < deploy/native/nginx-cardigan-preview.conf.template >> "$SITE.new"
+  echo "preview vhost :3101 ON ($(grep -c . "$PREVIEW_HTPASSWD") htpasswd user(s))"
+else
+  echo "preview vhost :3101 off (no $PREVIEW_HTPASSWD)"
+fi
 chmod 0600 "$SITE.new"
 # nginx -t can only test the site in place, so keep the old one to put back:
 # otherwise a failed test leaves a broken site for the next reload or reboot.
@@ -198,6 +211,11 @@ RUNNING=$(curl -fsS --max-time 5 "$API/" | python3 -c 'import json,sys; print(js
   || die "GET / did not return a version"
 [[ "$RUNNING" == "$EXPECTED" ]] || die "running version '$RUNNING' != expected '$EXPECTED'"
 curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:3100/ || die "dashboard not served on :3100"
+# The preview vhost is a public surface: prove its wall is up, not just that it answers.
+if [[ -s "$PREVIEW_HTPASSWD" ]]; then
+  WALL=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:3101/ || true)
+  [[ "$WALL" == "401" ]] || die "preview vhost :3101 returned $WALL to an unauthenticated request (expected 401)"
+fi
 
 printf 'sha=%s\nref=%s\nversion=%s\ndeployed_at=%s\ndeployed_by=%s\nprevious=%s\n' \
   "$SHA" "$REF" "$RUNNING" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SUDO_USER:-root}" "${PREV_SHA:-}" > "$PROVENANCE"
