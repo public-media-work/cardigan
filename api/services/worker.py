@@ -858,6 +858,15 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     await update_job_status(job_id, JobStatus.awaiting_review)
                     return
 
+            # An instance configured for the V5 engine (#427) runs the bundle and
+            # its generators instead of the phase pipeline below. V4 instances
+            # never take this branch.
+            from api.services.generation import settings as gen_settings
+
+            if gen_settings.engine(self.llm.config) == gen_settings.ENGINE_ITEMS:
+                await self._process_items_job(job, phases)
+                return
+
             # Load transcript
             transcript_content = self._load_transcript(job)
 
@@ -1363,23 +1372,6 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # starts a fresh capacity-wait ceiling rather than inheriting this one.
                 await clear_defer_state(job_id)
 
-                # Extract the job's items (#426). Kill-switched by default
-                # (routing.items in config/llm-config.json) so this is inert in
-                # prod until the job page exists — the SST lookup it performs
-                # is the only prod-visible side effect. Non-fatal either way:
-                # a job that produced good output must not be marked failed
-                # because extraction had a bad day.
-                if self.llm.config.get("routing", {}).get("items", {}).get("enabled"):
-                    try:
-                        from api.services.item_sync import refresh_job_items
-
-                        await refresh_job_items(job_id, llm_config=self.llm.config)
-                    except Exception as item_err:
-                        logger.warning(
-                            "Failed to extract job items (non-fatal)",
-                            extra={"job_id": job_id, "error": str(item_err)},
-                        )
-
                 # Archive the transcript file (non-fatal if this fails). Only on
                 # completion — a paused job may be reviewed/retried and still needs
                 # its source transcript, so we must NOT move it away on pause.
@@ -1461,6 +1453,61 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     logger.warning("Heartbeat cleanup error", extra={"job_id": job_id, "error": str(e)})
                 self._heartbeat_task = None
             self._current_job_id = None
+
+    async def _process_items_job(self, job: Dict[str, Any], phases: List[Dict[str, Any]]) -> None:
+        """Run one job on the V5 engine: the context bundle, then one generator
+        per item (#427).
+
+        A unit's failure is that item's state, never the job's: the job ends
+        ``completed`` once every item has a state. Only a failure to start —
+        no caption file — fails the job, via ``process_job``'s handler.
+        """
+        from api.models.job import JobPhase, JobUpdate, PhaseStatus
+        from api.services.database import update_job
+        from api.services.generation.runner import run_job
+
+        job_id = job["id"]
+        transcript_text = self._load_transcript(job)
+        if str(job.get("transcript_file", "")).lower().endswith(".srt"):
+            srt_text: Optional[str] = transcript_text
+        else:
+            srt_path = self._find_srt_file(job)
+            srt_text = srt_path.read_text(encoding="utf-8", errors="replace") if srt_path else None
+
+        # The V4 phases never run on this engine; say so instead of leaving
+        # them pending forever.
+        skipped = [
+            (
+                JobPhase(**{**phase, "status": PhaseStatus.skipped.value})
+                if phase.get("status") != PhaseStatus.completed.value
+                else JobPhase(**phase)
+            )
+            for phase in phases
+        ]
+        if skipped:
+            await update_job(job_id, JobUpdate(phases=skipped))
+
+        summary = await run_job(
+            job_id,
+            llm=self.llm,
+            llm_config=self.llm.config,
+            inputs={"transcript_text": transcript_text, "srt_text": srt_text},
+        )
+
+        run_summary = await end_run_tracking(job_id)
+        await update_job_status(
+            job_id,
+            JobStatus.completed,
+            actual_cost=run_summary["total_cost"] if run_summary else 0,
+        )
+        await clear_defer_state(job_id)
+        try:
+            self._archive_transcript(job)
+        except Exception as archive_err:
+            logger.warning(
+                "Failed to archive transcript (non-fatal)", extra={"job_id": job_id, "error": str(archive_err)}
+            )
+        logger.info("Job completed on the items engine", extra=summary)
 
     def _reasoning_payload(self, phase_name: str, backend: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Reasoning control to send for this phase, or None to leave it alone.

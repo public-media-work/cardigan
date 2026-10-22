@@ -10,7 +10,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy import (
     Boolean,
@@ -73,6 +73,7 @@ def get_app_version() -> str:
     return os.getenv("CARDIGAN_VERSION") or _default_app_version()
 
 
+from api.models.bundle import BundlePart
 from api.models.config import ConfigItem, ConfigValueType
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
 from api.models.item import Item, ItemAlternative, ItemFlag, ItemUpdate
@@ -139,6 +140,8 @@ jobs_table = Table(
     Column("job_type", Text, nullable=False, server_default="transcript"),  # 'transcript' | 'media'
     Column("media_file", Text, nullable=True),  # extracted audio, relative to MEDIA_DIR
     Column("intake", Text, nullable=True),  # JSON: speakers, context_terms, language
+    # Per-job override of the instance copy mode (migration 024, #427)
+    Column("copy_generation", Text, nullable=True),  # 'off' | 'review' | 'suggest'; NULL inherits
 )
 
 # Define session_stats table
@@ -229,6 +232,7 @@ job_items_table = Table(
     Column("rationale", Text, nullable=True),
     Column("flags", Text, nullable=True),  # JSON array of ItemFlag
     Column("alternatives", Text, nullable=True),  # JSON array of ItemAlternative
+    Column("input_revisions", Text, nullable=True),  # JSON: slice revisions and item inputs read (#427)
     Column("char_limit", Integer, nullable=True),
     Column("generator", Text, nullable=True),
     Column("model", Text, nullable=True),
@@ -259,6 +263,32 @@ item_pushes_table = Table(
     Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
     Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
     UniqueConstraint("item_id", "target", name="uq_item_pushes_item_target"),
+)
+
+# Define job_bundle_parts table (migration 024) — one slice of a job's context
+# bundle (#427). Built once per job, read by every generator; a correction
+# lands here, never inside one item.
+job_bundle_parts_table = Table(
+    "job_bundle_parts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False),
+    Column("slice", Text, nullable=False),
+    Column("origin", Text, nullable=False),  # deterministic | inferred
+    Column("state", Text, nullable=False, server_default="ready"),  # ready | failed | unavailable
+    Column("reason", Text, nullable=True),
+    Column("content", Text, nullable=True),  # JSON — what the builder produced
+    Column("edited_content", Text, nullable=True),  # JSON — the editor's correction
+    Column("revision", Integer, nullable=False, server_default="1"),
+    Column("producer", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("input_tokens", Integer, nullable=True),
+    Column("output_tokens", Integer, nullable=True),
+    Column("cost_usd", Float, nullable=True),
+    Column("built_at", DateTime, nullable=True),
+    Column("created_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    Column("updated_at", DateTime, nullable=False, server_default=func.current_timestamp()),
+    UniqueConstraint("job_id", "slice", name="uq_job_bundle_parts_job_slice"),
 )
 
 
@@ -466,6 +496,7 @@ async def create_job(job: JobCreate, app_version: Optional[str] = None) -> Job:
             "job_type": getattr(job, "job_type", "transcript") or "transcript",
             "media_file": getattr(job, "media_file", None),
             "intake": json.dumps(job.intake) if getattr(job, "intake", None) else None,
+            "copy_generation": job.copy_generation.value if getattr(job, "copy_generation", None) else None,
         }
 
         # Insert job
@@ -1586,10 +1617,10 @@ async def upsert_job_items(job_id: int, rows: List[dict]) -> int:
             payload["job_id"] = job_id
             payload["updated_at"] = now
 
-            for column in ("flags", "alternatives"):
+            for column in ("flags", "alternatives", "input_revisions"):
                 blob = payload.get(column)
-                if isinstance(blob, list):
-                    payload[column] = json.dumps(blob) if blob else None
+                if isinstance(blob, (list, dict)):
+                    payload[column] = json.dumps(blob, default=str) if blob else None
 
             key = payload["key"]
             if key in existing:
@@ -1686,6 +1717,164 @@ async def delete_job_items(job_id: int) -> int:
         return result.rowcount or 0
 
 
+# ---------------------------------------------------------------------------
+# Context bundle (#427)
+# ---------------------------------------------------------------------------
+
+# The editor's correction. Written only by edit_bundle_part, never by a build.
+EDITOR_OWNED_BUNDLE_COLUMNS = frozenset({"edited_content"})
+
+
+def _effective_json(content: Any, edited_content: Any) -> str:
+    """Canonical JSON of what a reader sees, for change detection."""
+    value = edited_content if edited_content is not None else content
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+async def write_bundle_part(
+    job_id: int,
+    slice_name: str,
+    *,
+    origin: str,
+    state: str,
+    reason: Optional[str] = None,
+    content: Any = None,
+    producer: Optional[str] = None,
+    model: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+) -> BundlePart:
+    """Insert or rebuild one slice, keyed on (job_id, slice).
+
+    A rebuild never touches ``edited_content``. The revision is bumped only
+    when what a reader sees changes, so rebuilding to the same content does
+    not mark every item that read it stale.
+    """
+    now = datetime.now(timezone.utc)
+    values = {
+        "origin": origin,
+        "state": state,
+        "reason": reason,
+        "content": json.dumps(content, default=str) if content is not None else None,
+        "producer": producer,
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd,
+        "built_at": now,
+        "updated_at": now,
+    }
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(job_bundle_parts_table).where(
+                and_(job_bundle_parts_table.c.job_id == job_id, job_bundle_parts_table.c.slice == slice_name)
+            )
+        )
+        existing = result.fetchone()
+
+        if existing is None:
+            stmt = job_bundle_parts_table.insert().values(
+                job_id=job_id, slice=slice_name, revision=1, created_at=now, **values
+            )
+        else:
+            edited = json.loads(existing.edited_content) if existing.edited_content else None
+            old = json.loads(existing.content) if existing.content else None
+            changed = _effective_json(old, edited) != _effective_json(content, edited) or existing.state != state
+            stmt = (
+                update(job_bundle_parts_table)
+                .where(job_bundle_parts_table.c.id == existing.id)
+                .values(revision=existing.revision + (1 if changed else 0), **values)
+            )
+        await session.execute(stmt)
+
+    return await get_bundle_part(job_id, slice_name)
+
+
+async def edit_bundle_part(job_id: int, slice_name: str, edited_content: Any) -> Optional[BundlePart]:
+    """Apply (or, with None, clear) the editor's correction to one slice.
+
+    Bumps the revision when what a reader sees changes, which marks every item
+    built on the old revision stale.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(job_bundle_parts_table).where(
+                and_(job_bundle_parts_table.c.job_id == job_id, job_bundle_parts_table.c.slice == slice_name)
+            )
+        )
+        existing = result.fetchone()
+        if existing is None:
+            return None
+
+        content = json.loads(existing.content) if existing.content else None
+        old_edit = json.loads(existing.edited_content) if existing.edited_content else None
+        changed = _effective_json(content, old_edit) != _effective_json(content, edited_content)
+
+        await session.execute(
+            update(job_bundle_parts_table)
+            .where(job_bundle_parts_table.c.id == existing.id)
+            .values(
+                edited_content=json.dumps(edited_content, default=str) if edited_content is not None else None,
+                revision=existing.revision + (1 if changed else 0),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+
+    return await get_bundle_part(job_id, slice_name)
+
+
+async def get_bundle_parts(job_id: int) -> List[BundlePart]:
+    """Return every slice of a job's bundle."""
+    async with get_session() as session:
+        result = await session.execute(select(job_bundle_parts_table).where(job_bundle_parts_table.c.job_id == job_id))
+        rows = result.fetchall()
+    return [_row_to_bundle_part(row) for row in rows]
+
+
+async def get_bundle_part(job_id: int, slice_name: str) -> Optional[BundlePart]:
+    """Return one slice, or None."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(job_bundle_parts_table).where(
+                and_(job_bundle_parts_table.c.job_id == job_id, job_bundle_parts_table.c.slice == slice_name)
+            )
+        )
+        row = result.fetchone()
+    return _row_to_bundle_part(row) if row else None
+
+
+def _row_to_bundle_part(row) -> BundlePart:
+    def _load(blob: Optional[str]) -> Any:
+        if not blob:
+            return None
+        try:
+            return json.loads(blob)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    return BundlePart(
+        id=row.id,
+        job_id=row.job_id,
+        slice=row.slice,
+        origin=row.origin,
+        state=row.state,
+        reason=row.reason,
+        content=_load(row.content),
+        edited_content=_load(row.edited_content),
+        revision=row.revision,
+        producer=row.producer,
+        model=row.model,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        cost_usd=row.cost_usd,
+        built_at=row.built_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
 def _parse_each(blob: Optional[str], parse) -> list:
     """Parse a JSON list one entry at a time, skipping entries that don't fit.
 
@@ -1703,6 +1892,17 @@ def _parse_each(blob: Optional[str], parse) -> list:
     if not isinstance(entries, list):
         return []
     return [parsed for parsed in (parse(entry) for entry in entries) if parsed is not None]
+
+
+def _parse_object(blob: Optional[str]) -> dict:
+    """Parse a JSON object, or {} for anything else."""
+    if not blob:
+        return {}
+    try:
+        value = json.loads(blob)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _parse_flag(entry) -> Optional[ItemFlag]:
@@ -1730,6 +1930,7 @@ def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
     """Convert a database row to an Item model."""
     flags = _parse_each(row.flags, _parse_flag)
     alternatives = _parse_each(row.alternatives, _parse_alternative)
+    input_revisions = _parse_object(getattr(row, "input_revisions", None))
 
     def _maybe(value: Optional[str]) -> Optional[str]:
         if not include_values and value is not None and len(value) > large:
@@ -1753,6 +1954,7 @@ def _row_to_item(row, include_values: bool = True, large: int = 4000) -> Item:
         rationale=row.rationale,
         flags=flags,
         alternatives=alternatives,
+        input_revisions=input_revisions,
         char_limit=row.char_limit,
         generator=row.generator,
         model=row.model,
@@ -1857,6 +2059,7 @@ def _row_to_job(row) -> Job:
         job_type=getattr(row, "job_type", None) or "transcript",
         media_file=getattr(row, "media_file", None),
         intake=json.loads(row.intake) if getattr(row, "intake", None) else None,
+        copy_generation=getattr(row, "copy_generation", None),
     )
 
 

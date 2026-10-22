@@ -1,6 +1,6 @@
 """Unit tests for item assembly and the legacy adapter (#426).
 
-Pure tests over ``api.services.items`` and ``api.services.legacy_item_adapter``
+Pure tests over ``api.services.items``
 — no DB, no network. ``SEO_MD`` mirrors the documented output shape in
 ``prompts/seo.md``; where a heading is asserted verbatim it is because the
 extractor keys on it.
@@ -29,7 +29,7 @@ from api.services.items import (
     premiere_date_proposals,
     split_title,
 )
-from api.services.legacy_item_adapter import extract_legacy_proposals
+from api.services.style_engine import extract_seo_fields
 
 # Mirrors prompts/seo.md — note "### Title (Final Recommendation)"; the
 # extractor matches on the "### Title" prefix.
@@ -82,8 +82,25 @@ def by_key(rows):
     return {row["key"]: row for row in rows}
 
 
-def legacy(**kwargs):
-    return extract_legacy_proposals(phase_models={"seo": "haiku", "formatter": "sonnet"}, **kwargs)
+def legacy(seo_md: str = "", formatter_md: str = "") -> dict:
+    """Proposals shaped like a model's output, read from a fixture report.
+
+    A section that can't be found yields a proposal with no value, so the item
+    reads as ``failed`` rather than silently absent.
+    """
+    proposals = {}
+    if seo_md:
+        fields = extract_seo_fields(seo_md)
+        for key in ("title", "short_description", "long_description"):
+            span = getattr(fields, key, None)
+            proposals[key] = Proposal(
+                value=span.value if span is not None else None, origin=Origin.inferred, generator="fixture:seo"
+            )
+    if formatter_md:
+        proposals["formatted_transcript"] = Proposal(
+            value=formatter_md, origin=Origin.inferred, generator="fixture:formatter"
+        )
+    return proposals
 
 
 class TestRegistry:
@@ -149,36 +166,6 @@ class TestNormalizeSstRecord:
         assert normalize_sst_record(record)[TITLE_ID] is None
 
 
-class TestLegacyAdapter:
-    def test_seo_fields_are_inferred_with_provenance(self):
-        proposals = legacy(seo_md=SEO_MD)
-
-        title = proposals["title"]
-        assert title.value.startswith("Polling the failed surplus deal")
-        assert title.origin == Origin.inferred
-        assert title.generator == "legacy_adapter:seo"
-        assert title.model == "haiku"
-
-    def test_transcript_is_inferred(self):
-        """Today's formatter is a model, so its transcript is inferred."""
-        proposal = legacy(formatter_md="Speaker 1: hello")["formatted_transcript"]
-        assert proposal.origin == Origin.inferred
-        assert proposal.model == "sonnet"
-
-    def test_missing_output_yields_no_proposal(self):
-        assert legacy() == {}
-
-    def test_present_output_without_a_section_yields_an_empty_proposal(self):
-        proposals = legacy(seo_md="# SEO Report\n\nNothing parseable here.\n")
-        assert proposals["title"].value is None
-
-    def test_never_reads_the_analyst(self):
-        """The analyst's material belongs to the context bundle."""
-        import inspect
-
-        assert "analyst" not in inspect.signature(extract_legacy_proposals).parameters
-
-
 class TestPremiereDates:
     def test_dates_follow_digital_premiere(self):
         proposals = premiere_date_proposals(sst(premiere="2026-05-28T22:00:00.000Z"))
@@ -213,7 +200,7 @@ class TestBuildItems:
         assert row["generation_reason"] is None
         assert row["origin"] == "inferred"
         assert row["proposed_value"].startswith("Polling")
-        assert row["generator"] == "legacy_adapter:seo"
+        assert row["generator"] == "fixture:seo"
         assert row["generated_at"] is not None
 
     def test_no_record_means_no_basis_and_unknown(self):
@@ -511,15 +498,15 @@ class TestTitleLimits:
 
 
 class TestShippedConfigGate:
-    def test_item_extraction_is_off_by_default(self):
-        """The worker's item hook performs an AirTable lookup per completed
-        job. It must stay inert in the shipped config until the job page
-        exists; the dev instance flips it on locally."""
+    def test_shipped_engine_is_v4(self):
+        """cardigan02 runs the phase pipeline; only an instance that opts in
+        runs the V5 engine (#427)."""
         config = json.loads(Path("config/llm-config.json").read_text())
 
-        assert config["routing"]["items"]["enabled"] is False
+        assert config["routing"]["generation"]["engine"] == "v4"
 
-    def test_copy_generation_defaults_on(self):
+    def test_copy_generation_defaults_to_suggest(self):
         config = json.loads(Path("config/llm-config.json").read_text())
 
-        assert config["routing"]["items"]["copy_generation"] is True
+        assert config["routing"]["generation"]["copy_generation"] == "suggest"
+        assert "items" not in config["routing"]
