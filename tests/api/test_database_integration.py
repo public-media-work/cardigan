@@ -179,3 +179,20 @@ async def test_exit_criteria_create_and_retrieve(integration_db):
 
     print(f"PASS: Created and retrieved {len([job1, job2, job3])} jobs successfully")
     print("All exit criteria met!")
+
+
+@pytest.mark.asyncio
+async def test_started_at_survives_later_in_progress_updates(integration_db):
+    """The worker re-sends in_progress at every phase; started_at must keep the first stamp.
+
+    On cardigan02, job 27's started_at landed after its analyst phase had
+    finished because each phase's update overwrote it.
+    """
+    job = await create_job(JobCreate(project_name="t", transcript_file="t.srt"))
+
+    first = await update_job(job.id, JobUpdate(status=JobStatus.in_progress, current_phase="analyst"))
+    later = await update_job(job.id, JobUpdate(status=JobStatus.in_progress, current_phase="formatter"))
+
+    assert first.started_at is not None
+    assert later.started_at == first.started_at
+    assert later.current_phase == "formatter"

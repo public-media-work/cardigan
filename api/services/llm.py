@@ -287,8 +287,8 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
     # Claude via OpenRouter — tier 0/1/2 (pricing per 1M tokens)
-    "anthropic/claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "anthropic/claude-haiku-4.5": {"input": 0.80, "output": 4.00},
+    "anthropic/claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+    "anthropic/claude-haiku-4.5": {"input": 1.00, "output": 5.00},
     "anthropic/claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
     "anthropic/claude-opus-4-5-20250514": {"input": 15.00, "output": 75.00},
     "anthropic/claude-sonnet-4.6": {"input": 3.00, "output": 15.00},
@@ -656,8 +656,11 @@ class LLMClient:
             f"Model '{model}' is not in allowlist. " f"Allowed: {', '.join(self.model_allowlist)}"
         )
 
-    def check_token_cost(self, model: str) -> None:
+    def check_token_cost(self, model: str, pricing: Optional[Dict[str, float]] = None) -> None:
         """Check if model's per-token cost is within safety limits.
+
+        ``pricing`` ($/M input and output) is the catalog's price, used for a
+        model MODEL_PRICING doesn't list.
 
         Raises:
             TokenCostTooHighError: If model is too expensive
@@ -665,7 +668,7 @@ class LLMClient:
         if not self.enforce_guards:
             return
 
-        pricing = MODEL_PRICING.get(model)
+        pricing = MODEL_PRICING.get(model) or pricing
         if pricing is None:
             # Unknown model - be conservative and allow (but log warning)
             return
@@ -886,7 +889,15 @@ class LLMClient:
         # Safety guards - check before making request
         self.check_run_cost_cap()
         self.check_model_allowed(model_id)
-        self.check_token_cost(model_id)
+        # MODEL_PRICING doesn't list the models "latest" aliases resolve to, and
+        # an unpriced model passes the guard, so price OpenRouter models from
+        # the catalog. Local backends aren't in it; skip the lookup for them.
+        catalog_price = None
+        if backend_config.get("type") == "openrouter" and model_id not in MODEL_PRICING:
+            from api.services import model_roster
+
+            catalog_price = await model_roster.catalog_pricing(model_id)
+        self.check_token_cost(model_id, pricing=catalog_price)
 
         # Get API key
         api_key = self.get_api_key(backend_config)

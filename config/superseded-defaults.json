@@ -8,6 +8,14 @@
     {"path": ["phase_models", "timestamp"], "was": ["anthropic/claude-sonnet-4.6"], "since": "#499"},
     {"path": ["phase_models", "copy_editor"], "was": ["anthropic/claude-opus-4.6"], "since": "#499"},
     {"path": ["backends", "openrouter", "max_tokens"], "was": [16384], "since": "#499"},
-    {"path": ["backends", "openrouter", "timeout"], "was": [180], "since": "#499"}
+    {"path": ["backends", "openrouter", "timeout"], "was": [180], "since": "#499"},
+    {"path": ["backends", "openrouter-claude", "max_tokens"], "was": [16384], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-claude", "timeout"], "was": [240], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-big-brain", "max_tokens"], "was": [16384], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-big-brain", "timeout"], "was": [300], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-cheapskate", "max_tokens"], "was": [16384], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-cheapskate", "timeout"], "was": [300], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-direct", "max_tokens"], "was": [16384], "since": "#470 job 27"},
+    {"path": ["backends", "openrouter-direct", "timeout"], "was": [300], "since": "#470 job 27"}
   ]
 }
