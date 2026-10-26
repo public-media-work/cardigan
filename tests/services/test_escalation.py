@@ -223,6 +223,15 @@ def test_nonfixable_review_message_includes_flags():
     assert "Review notes appear in transcript body" in msg
 
 
+def test_nonfixable_review_message_names_the_validator_and_reads_cleanly():
+    """Job 28's message blamed the formatter, doubled a period, and closed with media_id advice."""
+    msg = nonfixable_review_message(["Program header reads 'Wisconsin Life' but the SST program differs."])
+    assert "validator flagged" in msg
+    assert ".." not in msg
+    assert "media_id" not in msg
+    assert "the formatter flagged" not in msg
+
+
 # ---------------------------------------------------------------------------
 # classify_qa_failure -- "[style-nonfixable:...]" prefix (task 2b)
 # ---------------------------------------------------------------------------

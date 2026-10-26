@@ -117,6 +117,30 @@ async def reasoning_caps(model_id: Optional[str]) -> Optional[dict]:
     return None
 
 
+async def catalog_pricing(model_id: Optional[str]) -> Optional[Dict[str, float]]:
+    """``{"input": $/M, "output": $/M}`` for ``model_id`` from the live catalog.
+
+    None when the model, the catalog or its pricing is unknown. Lets the cost
+    guard price models newer than llm.MODEL_PRICING, which is every model a
+    "latest" alias resolves to.
+    """
+    if not model_id:
+        return None
+    raw = await get_catalog()
+    for m in raw or []:
+        if m.get("id") != model_id:
+            continue
+        pricing = m.get("pricing") or {}
+        try:
+            return {
+                "input": float(pricing["prompt"]) * 1_000_000,
+                "output": float(pricing["completion"]) * 1_000_000,
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
 # OpenRouter's moving aliases start with "~", e.g. "~anthropic/claude-sonnet-latest";
 # the catalog lists each with an ``alias_target`` naming the concrete model (#499).
 MODEL_ALIAS_PREFIX = "~"

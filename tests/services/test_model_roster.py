@@ -194,6 +194,22 @@ async def test_catalog_is_cached_and_survives_a_failed_refresh(fresh_catalog_cac
 
 
 @pytest.mark.asyncio
+async def test_catalog_pricing_reads_per_token_prices_as_per_million(fresh_catalog_cache):
+    catalog = [
+        {"id": "anthropic/claude-haiku-5.5", "pricing": {"prompt": "0.0000001", "completion": "0.0000005"}},
+        {"id": "anthropic/claude-broken", "pricing": {"prompt": "n/a"}},
+        {"id": "anthropic/claude-unpriced"},
+    ]
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=catalog)):
+        price = await model_roster.catalog_pricing("anthropic/claude-haiku-5.5")
+        assert price == {"input": pytest.approx(0.1), "output": pytest.approx(0.5)}
+        assert await model_roster.catalog_pricing("anthropic/claude-broken") is None
+        assert await model_roster.catalog_pricing("anthropic/claude-unpriced") is None
+        assert await model_roster.catalog_pricing("anthropic/not-listed") is None
+        assert await model_roster.catalog_pricing(None) is None
+
+
+@pytest.mark.asyncio
 async def test_reasoning_caps_none_without_catalog(fresh_catalog_cache):
     with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
         assert await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5") is None

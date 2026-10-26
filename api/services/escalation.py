@@ -162,9 +162,13 @@ def classify_qa_failure(validation_result: dict | None, context: dict | None = N
 
 def nonfixable_review_message(nonfixable: list[str]) -> str:
     """Build the honest pause message naming the human-review items."""
-    items = "; ".join(nonfixable) if nonfixable else "items the formatter could not verify"
+    # The flags are the validator's findings, routed here because a stronger
+    # model can't settle them (often because the formatter left review notes
+    # an editor has to answer). Say so, rather than blaming the formatter.
+    items = "; ".join(f.strip().rstrip(".") for f in nonfixable if f and f.strip())
+    items = items or "items the formatter marked for an editor to verify"
     return (
-        "Paused for human review — the formatter flagged items it can't verify "
-        f"and a stronger model won't resolve: {items}. "
-        "Verify media_id + proper-noun spelling, then resume."
+        f"Paused for human review. The validator flagged: {items}. "
+        "A stronger model won't settle this, so an editor needs to check it against the output. "
+        "If the flag is wrong, resume the job; if it's right, fix the output or retry the phase."
     )

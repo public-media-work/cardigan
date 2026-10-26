@@ -287,8 +287,8 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
     # Claude via OpenRouter — tier 0/1/2 (pricing per 1M tokens)
-    "anthropic/claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "anthropic/claude-haiku-4.5": {"input": 0.80, "output": 4.00},
+    "anthropic/claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+    "anthropic/claude-haiku-4.5": {"input": 1.00, "output": 5.00},
     "anthropic/claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
     "anthropic/claude-opus-4-5-20250514": {"input": 15.00, "output": 75.00},
     "anthropic/claude-sonnet-4.6": {"input": 3.00, "output": 15.00},
@@ -534,6 +534,15 @@ def _backend_cost(config: Dict[str, Any], model: str, input_tokens: int, output_
     return calculate_cost(model, input_tokens, output_tokens)
 
 
+def _reported_cost(usage: dict) -> Optional[float]:
+    """The cost OpenRouter billed for a call, or None if it didn't say."""
+    for key in ("cost", "total_cost"):
+        value = (usage or {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
 def calculate_cost(
     model: str,
     input_tokens: int,
@@ -647,8 +656,11 @@ class LLMClient:
             f"Model '{model}' is not in allowlist. " f"Allowed: {', '.join(self.model_allowlist)}"
         )
 
-    def check_token_cost(self, model: str) -> None:
+    def check_token_cost(self, model: str, pricing: Optional[Dict[str, float]] = None) -> None:
         """Check if model's per-token cost is within safety limits.
+
+        ``pricing`` ($/M input and output) is the catalog's price, used for a
+        model MODEL_PRICING doesn't list.
 
         Raises:
             TokenCostTooHighError: If model is too expensive
@@ -656,9 +668,10 @@ class LLMClient:
         if not self.enforce_guards:
             return
 
-        pricing = MODEL_PRICING.get(model)
+        pricing = MODEL_PRICING.get(model) or pricing
         if pricing is None:
-            # Unknown model - be conservative and allow (but log warning)
+            # Unpriced (not in MODEL_PRICING, and no catalog price): allow.
+            # chat() warns when this happens to an OpenRouter model.
             return
 
         # Calculate average cost per 1K tokens (weighted toward output)
@@ -877,7 +890,17 @@ class LLMClient:
         # Safety guards - check before making request
         self.check_run_cost_cap()
         self.check_model_allowed(model_id)
-        self.check_token_cost(model_id)
+        # MODEL_PRICING doesn't list the models "latest" aliases resolve to, and
+        # an unpriced model passes the guard, so price OpenRouter models from
+        # the catalog. Local backends aren't in it; skip the lookup for them.
+        catalog_price = None
+        if backend_config.get("type") == "openrouter" and model_id not in MODEL_PRICING:
+            from api.services import model_roster
+
+            catalog_price = await model_roster.catalog_pricing(model_id)
+            if catalog_price is None:
+                logger.warning("Cost guard: no catalog price for %s; allowing it unchecked", model_id)
+        self.check_token_cost(model_id, pricing=catalog_price)
 
         # Get API key
         api_key = self.get_api_key(backend_config)
@@ -1103,10 +1126,11 @@ class LLMClient:
         total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
         reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
 
-        # OpenRouter may report cost directly
-        openrouter_cost = None
-        if "usage" in data and "total_cost" in data["usage"]:
-            openrouter_cost = data["usage"]["total_cost"]
+        # OpenRouter reports the billed amount as usage.cost on every response.
+        # Reading the nonexistent usage.total_cost priced every call from
+        # MODEL_PRICING, which has no entry for newer models, so they fell to
+        # the flat $1/$3 guess.
+        openrouter_cost = _reported_cost(usage)
 
         # Calculate cost (force $0 for free tier models)
         actual_model = data.get("model", model)

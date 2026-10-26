@@ -164,6 +164,27 @@ def test_packaged_openrouter_backends_all_set_max_tokens():
     assert not uncapped, f"OpenRouter backends without max_tokens fall back to 4096: {uncapped}"
 
 
+def test_packaged_openrouter_backends_share_output_budget():
+    """Every shipped OpenRouter backend matches ``openrouter``'s max_tokens and timeout.
+
+    #503 raised only ``openrouter``; the analyst on ``openrouter-cheapskate``
+    then spent 14,967 of its 16,384 tokens on Haiku 5.5 (cardigan02 job 27),
+    and the copy editor runs mandatory-reasoning Opus on ``openrouter-big-brain``.
+    """
+    import json
+    from pathlib import Path
+
+    config = json.loads((Path(__file__).resolve().parents[1] / "config" / "llm-config.json").read_text())
+    main = config["backends"]["openrouter"]
+    off = {
+        name: (backend.get("max_tokens"), backend.get("timeout"))
+        for name, backend in config["backends"].items()
+        if backend.get("type") == "openrouter"
+        and (backend.get("max_tokens"), backend.get("timeout")) != (main["max_tokens"], main["timeout"])
+    }
+    assert not off, f"OpenRouter backends below openrouter's budget: {off}"
+
+
 MANDATORY_CAPS = {"mandatory": True, "supported_efforts": ["max", "xhigh", "high", "medium", "low"]}
 OPTIONAL_CAPS = {"mandatory": False, "supported_efforts": ["max", "high", "medium", "low", "none"]}
 
@@ -354,7 +375,9 @@ async def test_chat_sends_the_resolved_id_never_the_alias(monkeypatch):
     seen = {}
 
     def guard(name):
-        return lambda model: seen.setdefault(name, model)
+        return lambda model, **_: seen.setdefault(name, model)
+
+    monkeypatch.setattr(model_roster, "catalog_pricing", AsyncMock(return_value=None))
 
     monkeypatch.setattr(client, "check_run_cost_cap", lambda: None)
     monkeypatch.setattr(client, "check_model_allowed", guard("allowlist"))
@@ -594,3 +617,99 @@ def test_tracker_books_unusable_call():
     assert tracker.total_output_tokens == 16384
     assert tracker.call_count == 1
     assert tracker.calls[0]["unusable"] is True
+
+
+class FakeRespBilled(FakeRespReasoning):
+    """OpenRouter body with the billed amount in usage.cost, as OpenRouter sends it."""
+
+    def __init__(self, cost, **kw):
+        super().__init__(**kw)
+        self._cost = cost
+
+    def json(self):
+        body = super().json()
+        body["usage"]["cost"] = self._cost
+        return body
+
+
+async def test_openrouter_cost_comes_from_usage_cost(monkeypatch):
+    """The recorded cost is what OpenRouter billed, not the MODEL_PRICING guess.
+
+    Reading usage.total_cost (a field OpenRouter never sends) priced every
+    5.5-family call at the flat $1/$3 fallback on cardigan02 (job 27).
+    """
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    async def _post(endpoint, headers, payload):
+        return FakeRespBilled(cost=0.0123, completion_tokens=2000, reasoning_tokens=500)
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    resp = await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+    )
+
+    assert resp.cost == pytest.approx(0.0123)
+
+
+def test_reported_cost_reads_cost_then_total_cost():
+    from api.services.llm import _reported_cost
+
+    assert _reported_cost({"cost": 0.5}) == 0.5
+    assert _reported_cost({"cost": 0}) == 0.0
+    assert _reported_cost({"total_cost": 0.25}) == 0.25
+    assert _reported_cost({"cost": "0.5"}) is None
+    assert _reported_cost({"cost": True}) is None
+    assert _reported_cost({}) is None
+    assert _reported_cost(None) is None
+
+
+def test_token_cost_guard_prices_unlisted_models_from_the_catalog():
+    """A model missing from MODEL_PRICING used to pass the guard unpriced.
+
+    Every model a "latest" alias resolves to is missing from it, so without the
+    catalog price nothing stops an alias moving to a far pricier model.
+    """
+    from api.services.llm import TokenCostTooHighError
+
+    client = LLMClient.__new__(LLMClient)
+    client.enforce_guards = True
+    client.max_cost_per_1k_tokens = 0.05
+
+    client.check_token_cost("anthropic/claude-opus-5.5", pricing={"input": 4.0, "output": 20.0})
+    with pytest.raises(TokenCostTooHighError):
+        client.check_token_cost("anthropic/claude-opus-9", pricing={"input": 30.0, "output": 150.0})
+    client.check_token_cost("anthropic/claude-unpriced")  # no price anywhere: still allowed
+
+
+async def test_chat_passes_catalog_price_to_the_guard(monkeypatch):
+    from api.services import model_roster
+
+    client = _openrouter_client()
+    client.config = {
+        "phase_models": {"copy_editor": "anthropic/claude-opus-5.5"},
+        "backends": {"openrouter": {"type": "openrouter", "endpoint": "https://openrouter.ai/x"}},
+    }
+    seen = {}
+    monkeypatch.setattr(model_roster, "catalog_pricing", AsyncMock(return_value={"input": 4.0, "output": 20.0}))
+    monkeypatch.setattr(client, "check_run_cost_cap", lambda: None)
+    monkeypatch.setattr(client, "check_model_allowed", lambda model: None)
+    monkeypatch.setattr(client, "check_token_cost", lambda model, pricing=None: seen.update(pricing=pricing))
+    monkeypatch.setattr(client, "get_api_key", lambda cfg: "fake-key")
+
+    class Stop(Exception):
+        pass
+
+    async def fake_call(config, model, messages, api_key, **kwargs):
+        raise Stop
+
+    monkeypatch.setattr(client, "_call_openrouter", fake_call)
+
+    with pytest.raises(Stop):
+        await client.chat(messages=[{"role": "user", "content": "hi"}], backend="openrouter", phase="copy_editor")
+
+    assert seen["pricing"] == {"input": 4.0, "output": 20.0}
