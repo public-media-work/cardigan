@@ -670,9 +670,8 @@ class LLMClient:
 
         pricing = MODEL_PRICING.get(model) or pricing
         if pricing is None:
-            # Unpriced (not in MODEL_PRICING, and no catalog price): allow, but
-            # say so, since the guard isn't checking this model.
-            logger.warning("Cost guard: no price for %s; allowing it unchecked", model)
+            # Unpriced (not in MODEL_PRICING, and no catalog price): allow.
+            # chat() warns when this happens to an OpenRouter model.
             return
 
         # Calculate average cost per 1K tokens (weighted toward output)
@@ -899,6 +898,8 @@ class LLMClient:
             from api.services import model_roster
 
             catalog_price = await model_roster.catalog_pricing(model_id)
+            if catalog_price is None:
+                logger.warning("Cost guard: no catalog price for %s; allowing it unchecked", model_id)
         self.check_token_cost(model_id, pricing=catalog_price)
 
         # Get API key
