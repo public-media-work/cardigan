@@ -534,6 +534,15 @@ def _backend_cost(config: Dict[str, Any], model: str, input_tokens: int, output_
     return calculate_cost(model, input_tokens, output_tokens)
 
 
+def _reported_cost(usage: dict) -> Optional[float]:
+    """The cost OpenRouter billed for a call, or None if it didn't say."""
+    for key in ("cost", "total_cost"):
+        value = (usage or {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
 def calculate_cost(
     model: str,
     input_tokens: int,
@@ -1103,10 +1112,11 @@ class LLMClient:
         total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
         reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
 
-        # OpenRouter may report cost directly
-        openrouter_cost = None
-        if "usage" in data and "total_cost" in data["usage"]:
-            openrouter_cost = data["usage"]["total_cost"]
+        # OpenRouter reports the billed amount as usage.cost on every response.
+        # Reading the nonexistent usage.total_cost priced every call from
+        # MODEL_PRICING, which has no entry for newer models, so they fell to
+        # the flat $1/$3 guess.
+        openrouter_cost = _reported_cost(usage)
 
         # Calculate cost (force $0 for free tier models)
         actual_model = data.get("model", model)

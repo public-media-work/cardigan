@@ -594,3 +594,52 @@ def test_tracker_books_unusable_call():
     assert tracker.total_output_tokens == 16384
     assert tracker.call_count == 1
     assert tracker.calls[0]["unusable"] is True
+
+
+class FakeRespBilled(FakeRespReasoning):
+    """OpenRouter body with the billed amount in usage.cost, as OpenRouter sends it."""
+
+    def __init__(self, cost, **kw):
+        super().__init__(**kw)
+        self._cost = cost
+
+    def json(self):
+        body = super().json()
+        body["usage"]["cost"] = self._cost
+        return body
+
+
+async def test_openrouter_cost_comes_from_usage_cost(monkeypatch):
+    """The recorded cost is what OpenRouter billed, not the MODEL_PRICING guess.
+
+    Reading usage.total_cost (a field OpenRouter never sends) priced every
+    5.5-family call at the flat $1/$3 fallback on cardigan02 (job 27).
+    """
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    async def _post(endpoint, headers, payload):
+        return FakeRespBilled(cost=0.0123, completion_tokens=2000, reasoning_tokens=500)
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    resp = await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+    )
+
+    assert resp.cost == pytest.approx(0.0123)
+
+
+def test_reported_cost_reads_cost_then_total_cost():
+    from api.services.llm import _reported_cost
+
+    assert _reported_cost({"cost": 0.5}) == 0.5
+    assert _reported_cost({"cost": 0}) == 0.0
+    assert _reported_cost({"total_cost": 0.25}) == 0.25
+    assert _reported_cost({"cost": "0.5"}) is None
+    assert _reported_cost({"cost": True}) is None
+    assert _reported_cost({}) is None
+    assert _reported_cost(None) is None
