@@ -131,6 +131,7 @@ class Proposal:
     origin: Origin
     generator: str
     model: Optional[str] = None
+    backend: Optional[str] = None
     rationale: Optional[str] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
@@ -799,6 +800,7 @@ def build_items(
                 "char_limit": char_limit.max,
                 "generator": proposal.generator if proposal else None,
                 "model": proposal.model if proposal else None,
+                "backend": proposal.backend if proposal else None,
                 "input_tokens": proposal.input_tokens if produced else None,
                 "output_tokens": proposal.output_tokens if produced else None,
                 "cost_usd": proposal.cost_usd if produced else None,

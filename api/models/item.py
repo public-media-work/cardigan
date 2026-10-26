@@ -226,6 +226,9 @@ class Item(BaseModel):
 
     generator: Optional[str] = None
     model: Optional[str] = Field(None, description="The resolved model id, never an alias")
+    backend: Optional[str] = Field(
+        None, description="The configured backend that served the call, e.g. 'openrouter' or 'local-llm'"
+    )
     input_revisions: Dict[str, Any] = Field(
         default_factory=dict,
         description="What the item was built from: {'slices': {name: revision}, 'items': {key: generated_at}}",

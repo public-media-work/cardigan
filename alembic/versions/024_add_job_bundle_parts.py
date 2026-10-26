@@ -21,7 +21,13 @@ revision         Bumped whenever the effective content (edited ?? content)
                  changes. Items record the revisions they read, so a
                  correction marks the items built on the old one as stale.
 producer, model, Provenance and spend, as on job_items.
+backend,
 *_tokens, cost_usd
+
+job_items.backend          The configured backend that served the call
+                           ('openrouter', 'local-llm'), not the API type. A
+                           model id alone doesn't say which provider or which
+                           local server ran it.
 
 job_items.input_revisions  JSON {"slices": {name: revision}, "items": {key:
                            generated_at}} — what the item was built from.
@@ -55,6 +61,7 @@ def upgrade() -> None:
         sa.Column("revision", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("producer", sa.Text(), nullable=True),
         sa.Column("model", sa.Text(), nullable=True),
+        sa.Column("backend", sa.Text(), nullable=True),
         sa.Column("input_tokens", sa.Integer(), nullable=True),
         sa.Column("output_tokens", sa.Integer(), nullable=True),
         sa.Column("cost_usd", sa.Float(), nullable=True),
@@ -67,6 +74,7 @@ def upgrade() -> None:
 
     with op.batch_alter_table("job_items") as batch:
         batch.add_column(sa.Column("input_revisions", sa.Text(), nullable=True))
+        batch.add_column(sa.Column("backend", sa.Text(), nullable=True))
 
     with op.batch_alter_table("jobs") as batch:
         batch.add_column(sa.Column("copy_generation", sa.Text(), nullable=True))
@@ -77,6 +85,7 @@ def downgrade() -> None:
         batch.drop_column("copy_generation")
 
     with op.batch_alter_table("job_items") as batch:
+        batch.drop_column("backend")
         batch.drop_column("input_revisions")
 
     op.drop_index("idx_job_bundle_parts_job", table_name="job_bundle_parts")

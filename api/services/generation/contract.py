@@ -145,6 +145,7 @@ class LLMCall:
 
     content: str
     model: str  # the resolved id
+    backend: str  # the configured backend name, e.g. 'openrouter' or 'local-llm'
     input_tokens: int
     output_tokens: int
     cost_usd: float
@@ -226,6 +227,7 @@ class UnitContext:
         call = LLMCall(
             content=response.content or "",
             model=response.model or model,
+            backend=self._llm.backend_name(self.settings.backend),
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             cost_usd=response.cost,
@@ -236,9 +238,10 @@ class UnitContext:
     def provenance(self) -> dict[str, Any]:
         """Totals across this unit's calls, for the runner to stamp."""
         if not self.calls:
-            return {"model": None, "input_tokens": None, "output_tokens": None, "cost_usd": None}
+            return {"model": None, "backend": None, "input_tokens": None, "output_tokens": None, "cost_usd": None}
         return {
             "model": self.calls[-1].model,
+            "backend": self.calls[-1].backend,
             "input_tokens": sum(c.input_tokens for c in self.calls),
             "output_tokens": sum(c.output_tokens for c in self.calls),
             "cost_usd": sum(c.cost_usd for c in self.calls),

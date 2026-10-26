@@ -219,6 +219,7 @@ async def _run_generator(
             proposal,
             generator=proposal.generator or spec.item,
             model=provenance["model"] or proposal.model,
+            backend=provenance["backend"] or proposal.backend,
             input_tokens=provenance["input_tokens"],
             output_tokens=provenance["output_tokens"],
             cost_usd=provenance["cost_usd"],

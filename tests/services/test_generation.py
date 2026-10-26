@@ -101,7 +101,13 @@ class FakeLLM:
         reply = self.replies[phase]
         if isinstance(reply, Exception):
             raise reply
-        return SimpleNamespace(content=reply, model=RESOLVED_MODEL, input_tokens=1000, output_tokens=200, cost=0.004)
+        # Like the real client, the response names the API type, not the backend.
+        return SimpleNamespace(
+            content=reply, model=RESOLVED_MODEL, backend="openai", input_tokens=1000, output_tokens=200, cost=0.004
+        )
+
+    def backend_name(self, backend=None):
+        return backend or self.config.get("primary_backend", "openrouter")
 
     def phases(self):
         return [call["phase"] for call in self.calls]
@@ -320,7 +326,7 @@ async def test_a_job_runs_end_to_end(job, stub_sst):
     assert title.generation_state.value == "ready"
     assert title.proposed_value == "Wisconsin Life | Justin Howland carves towering wildlife from logs"
     assert title.basis_value == "Grizz Works | Wisconsin Life"
-    assert title.model == RESOLVED_MODEL
+    assert (title.model, title.backend) == (RESOLVED_MODEL, "openrouter")
     assert (title.input_tokens, title.cost_usd) == (1000, 0.004)
     # The repeat of the proposal is dropped in code; two alternatives survive.
     assert [alt.angle for alt in title.alternatives] == ["place-driven", "human-interest"]
@@ -342,7 +348,7 @@ async def test_a_job_runs_end_to_end(job, stub_sst):
 
     outline = await get_bundle_part(job.id, "outline")
     assert outline.origin.value == "inferred"
-    assert outline.model == RESOLVED_MODEL
+    assert (outline.model, outline.backend) == (RESOLVED_MODEL, "openrouter")
 
 
 @pytest.mark.asyncio
@@ -427,6 +433,22 @@ async def test_copy_off_makes_no_model_call_for_copy(job, stub_sst):
     title = await get_job_item(job.id, "title")
     assert title.generation_reason == "copy_generation_off"
     assert title.basis_value == "Grizz Works | Wisconsin Life"
+
+
+@pytest.mark.asyncio
+async def test_provenance_names_the_configured_backend(job, stub_sst):
+    # An OpenAI-compatible local server reports its API type as "openai";
+    # the item must say which configured backend actually served it.
+    llm = FakeLLM()
+    config = {"routing": {"generation": {"generators": {"title": {"backend": "local-llm"}}}}}
+
+    await run_job(job.id, llm=llm, llm_config=config, inputs=INPUTS)
+
+    title = await get_job_item(job.id, "title")
+    assert title.backend == "local-llm"
+    assert (await get_bundle_part(job.id, "outline")).backend == "openrouter"
+    dates = await get_job_item(job.id, "protrack_date")
+    assert (dates.model, dates.backend) == (None, None)
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,9 @@ class BundlePart(BaseModel):
 
     producer: Optional[str] = None
     model: Optional[str] = Field(None, description="The resolved model id, never an alias")
+    backend: Optional[str] = Field(
+        None, description="The configured backend that served the call, e.g. 'openrouter' or 'local-llm'"
+    )
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
