@@ -6,11 +6,10 @@ no HTTP. Persistence lives in ``api.services.database.upsert_job_items``.
 
 Who produces proposals:
 
-- ``premiere_date_proposals`` (here) — the four "entered into system X" dates,
-  derived from ``Digital Premiere``. Deterministic.
-- ``api.services.legacy_item_adapter`` — title, descriptions and the formatted
-  transcript, read from today's phase outputs. Temporary: it is deleted when
-  the first generator lands.
+- the generators in ``api.services.generation.generators`` (#427), one per
+  item, run by ``api.services.generation.runner`` against the job's context
+  bundle. ``premiere_date_proposals`` (here) is the shared function behind
+  the four deterministic date generators.
 
 SST fields are addressed by **field id**, never by name. The base renames
 fields in place (``Single Source Status (BETA)`` lost its suffix and two copy
@@ -21,12 +20,15 @@ renamed field silently — the item would claim the field was empty.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Mapping, Optional
 
 from api.models.item import (
     NO_CHANGE_NEEDED,
+    REVIEW_ONLY,
+    CopyMode,
     CurrentState,
     FlagOrigin,
     FlagTarget,
@@ -75,6 +77,8 @@ NOT_GENERATED = "not_generated"
 NO_VALUE_EXTRACTED = "no_value_extracted"
 # A generator affirmed an item that has no basis — there was nothing to keep.
 AFFIRM_WITHOUT_BASIS = "affirm_without_basis"
+# copy_generation=review on a copy item with no basis: there is nothing to review.
+COPY_REVIEW_NO_BASIS = "copy_review_no_basis"
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,7 @@ class Proposal:
     origin: Origin
     generator: str
     model: Optional[str] = None
+    backend: Optional[str] = None
     rationale: Optional[str] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
@@ -442,6 +447,142 @@ def split_title(title: str) -> tuple[str, Optional[str]]:
     return title, None
 
 
+_TERM_RE = re.compile(r"[A-Z][\w'’-]*[a-z][\w'’-]*")
+_WORD_RE = re.compile(r"[\w'’-]+")
+
+
+def _bare(word: str) -> str:
+    """Lowercase, without a possessive or trailing hyphen."""
+    word = word.lower().strip("'’-")
+    for suffix in ("'s", "’s"):
+        if word.endswith(suffix):
+            word = word[: -len(suffix)]
+    return word
+
+
+def unsupported_terms(value: Optional[str], known_text: Optional[str]) -> list[str]:
+    """Capitalised words in ``value`` that appear nowhere in ``known_text``.
+
+    A cheap deterministic grounding check for names: a model that misspells a
+    guest ("Jusstin" for "Justin", 2WLIGrizzWorksSM, 2026-10-22) produces a
+    term the captions and SST never contain. Advisory — a correct name the
+    sources simply don't spell out will be flagged too.
+    """
+    if not value or not known_text:
+        return []
+    known = {_bare(word) for word in _WORD_RE.findall(known_text)}
+    found: list[str] = []
+    for term in _TERM_RE.findall(value):
+        bare = _bare(term)
+        if bare and bare not in known and term not in found:
+            parts = [p for p in re.split(r"[-’']", bare) if p]
+            if not parts or not all(part in known for part in parts):
+                found.append(term)
+    return found
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when a and b differ by exactly one insertion, deletion or substitution."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    i = j = edits = 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            i += 1
+            j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        if len(a) == len(b):
+            i += 1
+        j += 1
+    return edits + (len(b) - j) + (len(a) - i) == 1
+
+
+def spelling_conflicts(value: Optional[str], known_text: Optional[str]) -> list[tuple[str, str, int, int]]:
+    """Names in ``value`` that the sources mostly spell another way.
+
+    Returns ``(used, preferred, used_count, preferred_count)`` for each
+    capitalised term that appears in ``known_text`` but is one edit away from
+    a more frequent capitalised term there. Catches a typo inside a source — the Lower Thirds field
+    read "Jusstin Howland" while the captions and descriptions said "Justin"
+    (2WLIGrizzWorksSM, 2026-10-22) — which the unsupported-term check can't,
+    because the typo is "known".
+    """
+    if not value or not known_text:
+        return []
+    counts: dict[str, int] = {}
+    spelled: dict[str, str] = {}
+    for term in _TERM_RE.findall(known_text):
+        bare = _bare(term)
+        if len(bare) >= 4:
+            counts[bare] = counts.get(bare, 0) + 1
+            spelled.setdefault(bare, term)
+
+    conflicts: list[tuple[str, str, int, int]] = []
+    seen: set[str] = set()
+    for term in _TERM_RE.findall(value):
+        bare = _bare(term)
+        if len(bare) < 4 or bare in seen:
+            continue
+        seen.add(bare)
+        used = counts.get(bare, 0)
+        if used == 0:
+            continue  # not in any source: unsupported_terms already flags it
+        rivals = [(n, other) for other, n in counts.items() if n > used and _one_edit_apart(bare, other)]
+        if rivals:
+            n, other = max(rivals)
+            conflicts.append((term, spelled[other], used, n))
+    return conflicts
+
+
+def _grounding_flags(value: Optional[str], known_text: Optional[str], target: "FlagTarget") -> list[dict[str, Any]]:
+    def flag(rule_id: str, message: str) -> dict[str, Any]:
+        return {
+            "check": "grounding",
+            "rule_id": rule_id,
+            "severity": "warning",
+            "message": message,
+            "model_fixable": target != FlagTarget.basis,
+            "origin": FlagOrigin.code.value,
+            "target": target.value,
+        }
+
+    flags = [
+        flag("grounding.unsupported_term", f"'{term}' appears nowhere in the captions, the SST record or the glossary")
+        for term in unsupported_terms(value, known_text)
+    ]
+    flags += [
+        flag(
+            "grounding.spelling_conflict",
+            f"'{used}' appears {used_n}x in the sources; '{preferred}' appears {preferred_n}x. Check the spelling.",
+        )
+        for used, preferred, used_n, preferred_n in spelling_conflicts(value, known_text)
+    ]
+    return flags
+
+
+def join_title(part: str, program: Optional[str]) -> str:
+    """Assemble a Release Title from its part and program, in the house position.
+
+    The inverse of :func:`split_title`. A program name already on ``part`` is
+    stripped first, so a model that ignores "don't include the program" can't
+    double it.
+    """
+    part = part.strip()
+    if not program:
+        return part
+    stripped, found = split_title(part)
+    if found == program:
+        part = stripped.strip()
+    if program in PREFIX_PROGRAMS:
+        return f"{program}{TITLE_SEPARATOR}{part}"
+    return f"{part}{TITLE_SEPARATOR}{program}"
+
+
 @dataclass(frozen=True)
 class CharLimit:
     """A field's house-style limits. For the title, ``max`` applies to the
@@ -524,14 +665,17 @@ def _model_flags(flags: tuple[Mapping[str, Any], ...], default_target: FlagTarge
     return stamped
 
 
-def _alternatives(candidates: tuple[Candidate, ...], limit: CharLimit, key: str) -> list[dict[str, Any]]:
+def _alternatives(
+    candidates: tuple[Candidate, ...], limit: CharLimit, key: str, known_text: Optional[str] = None
+) -> list[dict[str, Any]]:
     """Alternatives with code-measured limit flags beside the model's own."""
     return [
         {
             "value": candidate.value,
             "angle": candidate.angle,
             "flags": _model_flags(candidate.flags, FlagTarget.alternative)
-            + _char_limit_flags(candidate.value, limit, FlagTarget.alternative, key=key),
+            + _char_limit_flags(candidate.value, limit, FlagTarget.alternative, key=key)
+            + _grounding_flags(candidate.value, known_text, FlagTarget.alternative),
         }
         for candidate in candidates
     ]
@@ -542,8 +686,9 @@ def build_items(
     job_id: int,
     proposals: Mapping[str, Proposal],
     sst_context: Optional[Mapping[str, Any]] = None,
-    copy_generation: bool = True,
+    copy_generation: CopyMode | bool | str = CopyMode.suggest,
     content_type: str = "full",
+    known_text: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Build every item row for a job, ready for ``upsert_job_items``.
 
@@ -554,14 +699,22 @@ def build_items(
         sst_context: ``normalize_sst_record`` output. ``None`` means there was
             no record to read: every basis is null and every
             ``current_state`` is ``unknown``.
-        copy_generation: the instance setting. Off, copy items still exist —
+        copy_generation: the job's copy mode (``off | review | suggest``; a
+            boolean is read as #426's on/off). Off, copy items still exist —
             with their basis — as ``unavailable``/``copy_generation_off``, and
-            an editor can still type into them.
+            an editor can still type into them. Under ``review`` a copy item
+            keeps its basis: any proposal or alternatives are dropped here,
+            whatever the generator returned, and only affirmations and flags
+            survive (``review_only``).
         content_type: 'full' | 'short' | 'clip', selects house-style limits.
+        known_text: the job's source text (captions, SST record, glossary).
+            When given, copy proposals and alternatives are checked for names
+            that appear nowhere in it (``grounding.unsupported_term``).
 
     Rows never carry ``review_state`` or ``edited_value`` for an existing
     item; ``upsert_job_items`` owns that guarantee. Pure — no DB, no network.
     """
+    copy_mode = CopyMode.parse(copy_generation)
     fetched = sst_context is not None
     sst: Mapping[str, Any] = sst_context or {}
     ladder = sst.get(SST_STATUS_FIELD_ID)
@@ -588,11 +741,15 @@ def build_items(
         reason: Optional[str] = None
 
         affirmed = False
+        is_copy = spec.category == ItemCategory.copy
+        review = is_copy and copy_mode == CopyMode.review
 
         if spec.unavailable_reason:
             state, reason = GenerationState.unavailable, spec.unavailable_reason
-        elif spec.category == ItemCategory.copy and not copy_generation:
+        elif is_copy and copy_mode == CopyMode.off:
             state, reason = GenerationState.unavailable, COPY_GENERATION_OFF
+        elif review and basis_value is None:
+            state, reason = GenerationState.unavailable, COPY_REVIEW_NO_BASIS
         elif proposal is None:
             state, reason = GenerationState.unavailable, NOT_GENERATED
         elif proposal.affirm:
@@ -600,6 +757,9 @@ def build_items(
                 state, reason, affirmed = GenerationState.ready, NO_CHANGE_NEEDED, True
             else:
                 state, reason = GenerationState.failed, AFFIRM_WITHOUT_BASIS
+        elif review and (proposal.value is not None or proposal.alternatives):
+            # Review may only affirm or flag. The text is dropped, not the run.
+            state, reason, affirmed = GenerationState.ready, REVIEW_ONLY, True
         elif proposal.value is None:
             state = proposal.missing_state
             reason = proposal.missing_reason or NO_VALUE_EXTRACTED
@@ -609,6 +769,8 @@ def build_items(
         produced = state == GenerationState.ready
 
         flags = _char_limit_flags(proposed_value, char_limit, key=spec.key)
+        if is_copy:
+            flags += _grounding_flags(proposed_value, known_text, FlagTarget.proposal)
         if affirmed:
             # The editor keeps the basis, so its measurements are the ones that matter.
             flags += _char_limit_flags(basis_value, char_limit, FlagTarget.basis, key=spec.key)
@@ -630,10 +792,15 @@ def build_items(
                 "proposed_value": proposed_value,
                 "rationale": proposal.rationale if produced else None,
                 "flags": flags,
-                "alternatives": _alternatives(proposal.alternatives, char_limit, spec.key) if produced else [],
+                "alternatives": (
+                    _alternatives(proposal.alternatives, char_limit, spec.key, known_text if is_copy else None)
+                    if produced and not review
+                    else []
+                ),
                 "char_limit": char_limit.max,
                 "generator": proposal.generator if proposal else None,
                 "model": proposal.model if proposal else None,
+                "backend": proposal.backend if proposal else None,
                 "input_tokens": proposal.input_tokens if produced else None,
                 "output_tokens": proposal.output_tokens if produced else None,
                 "cost_usd": proposal.cost_usd if produced else None,

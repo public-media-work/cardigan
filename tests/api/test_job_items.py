@@ -28,7 +28,7 @@ from api.services.items import (
     Proposal,
     build_items,
 )
-from api.services.legacy_item_adapter import extract_legacy_proposals
+from api.services.style_engine import extract_seo_fields
 
 
 @pytest_asyncio.fixture
@@ -89,8 +89,29 @@ Zac Schultz breaks down the collapsed surplus negotiation.
 """
 
 
+def fixture_proposals(seo_md: str = "", formatter_md: str = "") -> dict:
+    """Proposals shaped like a model's output, read from a fixture report.
+
+    A section that can't be found yields a proposal with no value, so the item
+    reads as ``failed`` rather than silently absent.
+    """
+    proposals = {}
+    if seo_md:
+        fields = extract_seo_fields(seo_md)
+        for key in ("title", "short_description", "long_description"):
+            span = getattr(fields, key, None)
+            proposals[key] = Proposal(
+                value=span.value if span is not None else None, origin=Origin.inferred, generator="fixture:seo"
+            )
+    if formatter_md:
+        proposals["formatted_transcript"] = Proposal(
+            value=formatter_md, origin=Origin.inferred, generator="fixture:formatter"
+        )
+    return proposals
+
+
 def rows_for(job_id, seo_md=SEO_MD, formatter_md="", sst_context=None):
-    proposals = extract_legacy_proposals(seo_md=seo_md, formatter_md=formatter_md)
+    proposals = fixture_proposals(seo_md=seo_md, formatter_md=formatter_md)
     return build_items(job_id=job_id, proposals=proposals, sst_context=sst_context)
 
 
