@@ -44,8 +44,9 @@ class ComponentStatus(BaseModel):
     # Seconds since the component's last DB heartbeat (None for API, which is
     # detected by port, or if the component has never heartbeated).
     heartbeat_age_seconds: Optional[float] = None
-    # Docker container name for this component, or None if not containerized
-    # (the transcript watcher has no container in the current compose).
+    # Service name for this component: the systemd unit natively, the container
+    # name under Docker (they match). None for the transcript watcher, which
+    # has no service of its own. The field keeps its name for API compatibility.
     container: Optional[str] = None
 
 
