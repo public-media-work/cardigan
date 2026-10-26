@@ -190,14 +190,16 @@ class PhaseModelsUpdate(BaseModel):
     )
 
 
+# Used only when the live config has no phase_models at all; mirrors the packaged
+# default (every phase follows its family's newest model, #499).
 DEFAULT_PHASE_MODELS = {
-    "analyst": "anthropic/claude-haiku-4.5",
-    "formatter": "anthropic/claude-sonnet-4.6",
-    "seo": "anthropic/claude-sonnet-4.6",
-    "validator": "anthropic/claude-haiku-4.5",
-    "timestamp": "anthropic/claude-sonnet-4.6",
-    "copy_editor": "anthropic/claude-opus-4.6",
-    "chat": "anthropic/claude-sonnet-4.6",
+    "analyst": "~anthropic/claude-haiku-latest",
+    "formatter": "~anthropic/claude-sonnet-latest",
+    "seo": "~anthropic/claude-sonnet-latest",
+    "validator": "~anthropic/claude-haiku-latest",
+    "timestamp": "~anthropic/claude-sonnet-latest",
+    "copy_editor": "~anthropic/claude-opus-latest",
+    "chat": "~anthropic/claude-sonnet-latest",
 }
 
 
