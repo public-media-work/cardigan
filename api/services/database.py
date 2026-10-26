@@ -671,7 +671,9 @@ async def update_job(job_id: int, job_update: JobUpdate) -> Optional[Job]:
             # Auto-set timestamps based on status
             # The worker re-sends in_progress at every phase; only the first one
             # may stamp started_at, or it ends up at the last phase's start.
-            # claim_next_job sets it for each run, retries included.
+            # claim_next_job sets it for each run, retries included. JobUpdate
+            # carries no started_at, so nothing explicit is overridden here; if
+            # it ever gains one, honor it before this line.
             if job_update.status == JobStatus.in_progress:
                 update_values["started_at"] = func.coalesce(jobs_table.c.started_at, datetime.now(timezone.utc))
             elif job_update.status in (JobStatus.completed, JobStatus.failed, JobStatus.cancelled):

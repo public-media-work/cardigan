@@ -181,7 +181,8 @@ async def _self_restart(delay: float = 1.0) -> None:
     """Terminate this API process after the response has flushed.
 
     uvicorn handles SIGTERM as a graceful shutdown; ``restart: unless-stopped``
-    (Docker) or ``Restart=always`` (native systemd) brings the process back. The delay lets the HTTP response reach the client.
+    (Docker) or ``Restart=always`` (native systemd) brings the process back.
+    The delay lets the HTTP response reach the client.
     """
     await asyncio.sleep(delay)
     os.kill(os.getpid(), signal.SIGTERM)

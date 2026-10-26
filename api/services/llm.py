@@ -670,7 +670,9 @@ class LLMClient:
 
         pricing = MODEL_PRICING.get(model) or pricing
         if pricing is None:
-            # Unknown model - be conservative and allow (but log warning)
+            # Unpriced (not in MODEL_PRICING, and no catalog price): allow, but
+            # say so, since the guard isn't checking this model.
+            logger.warning("Cost guard: no price for %s; allowing it unchecked", model)
             return
 
         # Calculate average cost per 1K tokens (weighted toward output)
