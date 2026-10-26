@@ -65,6 +65,11 @@ async def resolve_escalated_model(current_model: str | None, exclude_variants: l
     target_family = bump_family(parse_model_family(current_model))
     if target_family is None:
         return None
+    # OpenRouter's own "latest" alias first (#499); sorting by ``created`` is the
+    # fallback for a family the catalog has no alias for.
+    resolved = await model_roster.resolve_alias(model_roster.family_alias(target_family))
+    if resolved and not any(v.lower() in resolved.lower() for v in exclude_variants):
+        return resolved
     return await model_roster.newest_in_family(target_family, exclude_variants)
 
 

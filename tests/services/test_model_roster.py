@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -196,6 +197,59 @@ async def test_catalog_is_cached_and_survives_a_failed_refresh(fresh_catalog_cac
 async def test_reasoning_caps_none_without_catalog(fresh_catalog_cache):
     with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
         assert await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5") is None
+
+
+ALIAS_CATALOG = [
+    {
+        "id": "~anthropic/claude-sonnet-latest",
+        "alias_target": {"name": "Anthropic: Claude Sonnet 5.5", "slug": "anthropic/claude-sonnet-5.5"},
+    },
+    {"id": "anthropic/claude-sonnet-5.5"},
+]
+
+
+def test_alias_helpers():
+    assert model_roster.is_model_alias("~anthropic/claude-sonnet-latest")
+    assert not model_roster.is_model_alias("anthropic/claude-sonnet-4.6")
+    assert not model_roster.is_model_alias(None)
+    assert model_roster.family_alias("Opus") == "~anthropic/claude-opus-latest"
+
+
+@pytest.mark.asyncio
+async def test_resolve_alias_reads_alias_target_and_remembers_it(fresh_catalog_cache):
+    persisted = AsyncMock()
+    with (
+        patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=ALIAS_CATALOG)),
+        patch("api.services.database.set_config", persisted),
+    ):
+        assert await model_roster.resolve_alias("~anthropic/claude-sonnet-latest") == "anthropic/claude-sonnet-5.5"
+        await model_roster.resolve_alias("~anthropic/claude-sonnet-latest")
+    # Persisted once; an unchanged resolution doesn't rewrite the config row.
+    persisted.assert_awaited_once()
+    assert persisted.await_args.args[:2] == (
+        "model_alias.~anthropic/claude-sonnet-latest",
+        "anthropic/claude-sonnet-5.5",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_alias_falls_back_to_last_good_resolution(fresh_catalog_cache):
+    """Catalog down: yesterday's model beats no model."""
+    stored = SimpleNamespace(value="anthropic/claude-sonnet-5.5")
+    with (
+        patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)),
+        patch("api.services.database.get_config", AsyncMock(return_value=stored)),
+    ):
+        assert await model_roster.resolve_alias("~anthropic/claude-sonnet-latest") == "anthropic/claude-sonnet-5.5"
+
+
+@pytest.mark.asyncio
+async def test_resolve_alias_none_when_never_resolved(fresh_catalog_cache):
+    with (
+        patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)),
+        patch("api.services.database.get_config", AsyncMock(return_value=None)),
+    ):
+        assert await model_roster.resolve_alias("~anthropic/claude-sonnet-latest") is None
 
 
 def test_lowest_reasoning_effort_skips_none():

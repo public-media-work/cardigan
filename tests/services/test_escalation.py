@@ -79,12 +79,45 @@ def test_no_flags_returns_empty():
 
 @pytest.mark.asyncio
 async def test_resolve_escalated_model_bumps_and_resolves():
-    with patch.object(
-        escalation.model_roster, "newest_in_family", AsyncMock(return_value="anthropic/claude-sonnet-4-6")
-    ) as m:
+    """No alias in the catalog: fall back to the newest-by-``created`` search."""
+    with (
+        patch.object(escalation.model_roster, "resolve_alias", AsyncMock(return_value=None)),
+        patch.object(
+            escalation.model_roster, "newest_in_family", AsyncMock(return_value="anthropic/claude-sonnet-4-6")
+        ) as m,
+    ):
         got = await escalation.resolve_escalated_model("anthropic/claude-4.5-haiku-20251001", ["fast", "fable"])
     assert got == "anthropic/claude-sonnet-4-6"
     m.assert_awaited_once_with("sonnet", ["fast", "fable"])
+
+
+@pytest.mark.asyncio
+async def test_resolve_escalated_model_prefers_family_alias():
+    """OpenRouter's "latest" alias names the target; no created-sort guess (#499)."""
+    alias = AsyncMock(return_value="anthropic/claude-sonnet-5.5")
+    newest = AsyncMock()
+    with (
+        patch.object(escalation.model_roster, "resolve_alias", alias),
+        patch.object(escalation.model_roster, "newest_in_family", newest),
+    ):
+        got = await escalation.resolve_escalated_model("anthropic/claude-haiku-4.5", ["fast", "fable"])
+    assert got == "anthropic/claude-sonnet-5.5"
+    alias.assert_awaited_once_with("~anthropic/claude-sonnet-latest")
+    newest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_escalated_model_ignores_alias_onto_excluded_variant():
+    with (
+        patch.object(
+            escalation.model_roster, "resolve_alias", AsyncMock(return_value="anthropic/claude-sonnet-5-fast")
+        ),
+        patch.object(
+            escalation.model_roster, "newest_in_family", AsyncMock(return_value="anthropic/claude-sonnet-5.5")
+        ),
+    ):
+        got = await escalation.resolve_escalated_model("anthropic/claude-haiku-4.5", ["fast", "fable"])
+    assert got == "anthropic/claude-sonnet-5.5"
 
 
 @pytest.mark.asyncio

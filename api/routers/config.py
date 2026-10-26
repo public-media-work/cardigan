@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from api.services import model_roster
 from api.services.config_path import resolve_config_path
 from api.services.cost_estimator import estimate_job_cost
 from api.services.llm import get_llm_client
@@ -355,7 +356,11 @@ async def get_cost_estimate(body: CostEstimateRequest):
     config = _load_config()
 
     # Use provided phase_models or fall back to current config
-    phase_models = body.phase_models or config.get("phase_models", DEFAULT_PHASE_MODELS)
+    phase_models = dict(body.phase_models or config.get("phase_models", DEFAULT_PHASE_MODELS))
+    # Price an alias ("~anthropic/claude-sonnet-latest") as the model it points at now.
+    for phase, model_id in phase_models.items():
+        if model_roster.is_model_alias(model_id):
+            phase_models[phase] = await model_roster.resolve_alias(model_id) or model_id
 
     # Build pricing overrides from the model roster (has live OpenRouter pricing)
     pricing_overrides = {}

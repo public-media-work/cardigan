@@ -117,6 +117,75 @@ async def reasoning_caps(model_id: Optional[str]) -> Optional[dict]:
     return None
 
 
+# OpenRouter's moving aliases start with "~", e.g. "~anthropic/claude-sonnet-latest";
+# the catalog lists each with an ``alias_target`` naming the concrete model (#499).
+MODEL_ALIAS_PREFIX = "~"
+# Last good alias resolutions persist in the DB config table under this prefix,
+# so a catalog outage resolves to yesterday's model, not to nothing.
+ALIAS_CONFIG_PREFIX = "model_alias."
+_alias_memory: Dict[str, str] = {}
+
+
+def is_model_alias(model_id: Optional[str]) -> bool:
+    return bool(model_id) and model_id.startswith(MODEL_ALIAS_PREFIX)
+
+
+def family_alias(family: str) -> str:
+    """The OpenRouter "latest" alias for an Anthropic family name."""
+    return f"{MODEL_ALIAS_PREFIX}anthropic/claude-{family.lower()}-latest"
+
+
+def _alias_target(raw: Optional[List[dict]], alias: str) -> Optional[str]:
+    for m in raw or []:
+        if m.get("id") == alias:
+            target = m.get("alias_target")
+            slug = target.get("slug") if isinstance(target, dict) else target
+            return slug or None
+    return None
+
+
+async def _remember_alias(alias: str, target: str) -> None:
+    if _alias_memory.get(alias) == target:
+        return
+    _alias_memory[alias] = target
+    try:
+        from api.services.database import set_config
+
+        await set_config(ALIAS_CONFIG_PREFIX + alias, target, description="Last good resolution of a model alias")
+    except Exception as e:  # no DB in this process (tests, scripts): memory still holds it
+        logger.debug("Could not persist alias %s -> %s: %s", alias, target, e)
+
+
+async def _last_good_alias(alias: str) -> Optional[str]:
+    if alias in _alias_memory:
+        return _alias_memory[alias]
+    try:
+        from api.services.database import get_config
+
+        item = await get_config(ALIAS_CONFIG_PREFIX + alias)
+    except Exception as e:
+        logger.debug("Could not read last resolution of %s: %s", alias, e)
+        return None
+    return item.value if item and item.value else None
+
+
+async def resolve_alias(alias: str) -> Optional[str]:
+    """The concrete model id an OpenRouter alias points at now.
+
+    Reads the catalog's ``alias_target``; if the catalog is unavailable or no
+    longer lists the alias, returns the last good resolution. None only if the
+    alias has never resolved -- callers then use the backend's fallback model.
+    """
+    target = _alias_target(await get_catalog(), alias)
+    if target:
+        await _remember_alias(alias, target)
+        return target
+    last = await _last_good_alias(alias)
+    if last:
+        logger.warning("Catalog could not resolve %s; using last good resolution %s", alias, last)
+    return last
+
+
 def lowest_reasoning_effort(caps: Optional[dict]) -> Optional[str]:
     """Weakest effort the model supports, or None if it lists none we know."""
     efforts = (caps or {}).get("supported_efforts") or []
@@ -323,6 +392,7 @@ def invalidate_cache() -> None:
     _cache["expires"] = 0.0
     _catalog_cache["data"] = None
     _catalog_cache["expires"] = 0.0
+    _alias_memory.clear()
 
 
 async def newest_in_family(family: str, exclude_variants: list) -> Optional[str]:
