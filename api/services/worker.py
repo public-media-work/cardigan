@@ -104,6 +104,19 @@ SST_PROJECT_FIELD_MAP = {
     "project_description": "Project Description",
 }
 
+# Projects are often season-scoped ("Wisconsin Life | Season 13"); the
+# formatter's **Program:** header is the show, and the validator holds it to
+# the SST value, so the season designation comes off (cardigan02 job 28).
+_SEASON_SUFFIX = re.compile(r"\s*\|\s*Season\s+\d+\s*$", re.IGNORECASE)
+
+
+def program_from_project_name(name: Any) -> Any:
+    """The program a Project name stands for: its name minus a "| Season N" suffix."""
+    if not isinstance(name, str):
+        return name
+    return _SEASON_SUFFIX.sub("", name).strip() or name
+
+
 # The complete SST-table read surface, pinned against the schema snapshot.
 SST_CONTEXT_AIRTABLE_FIELDS = tuple(SST_CONTEXT_FIELD_MAP.values()) + _SST_EXTRA_FIELDS
 
@@ -1823,6 +1836,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                         project_fields = project_record.get("fields", {})
                         for key, name in SST_PROJECT_FIELD_MAP.items():
                             sst_context[key] = project_fields.get(name)
+                        sst_context["program"] = program_from_project_name(sst_context.get("program"))
                 except Exception as e:
                     logger.debug("Failed to fetch linked Project (non-fatal)", extra={"error": str(e)})
 

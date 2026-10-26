@@ -359,3 +359,32 @@ def test_validator_checklist_has_factual_consistency_item():
         assert (
             "factual" in text or "consistent" in text
         ), f"validator.checklist.{profile} has no factual-consistency item"
+
+
+@pytest.mark.parametrize(
+    "name, program",
+    [
+        ("Wisconsin Life | Season 13", "Wisconsin Life"),
+        ("Wisconsin Life|season 7 ", "Wisconsin Life"),
+        ("Madison Symphony at 100", "Madison Symphony at 100"),
+        ("Here & Now | 2026 Election", "Here & Now | 2026 Election"),
+        (None, None),
+    ],
+)
+def test_program_from_project_name_drops_only_a_season_suffix(name, program):
+    from api.services.worker import program_from_project_name
+
+    assert program_from_project_name(name) == program
+
+
+@pytest.mark.asyncio
+async def test_fetch_sst_context_program_is_the_show_not_the_season():
+    """Job 28 paused because the validator held "Program: Wisconsin Life" to "Wisconsin Life | Season 13"."""
+    client = _mock_airtable(get_result=_SST_RECORD)
+    client.get_project_record = AsyncMock(
+        return_value={"id": "recP", "fields": {"Project Name": "Wisconsin Life | Season 13"}}
+    )
+    with patch("api.services.worker.get_airtable_client", return_value=client):
+        ctx = await _worker()._fetch_sst_context({"id": 28, "airtable_record_id": "recKOHEyjglPEvf0a"})
+
+    assert ctx["program"] == "Wisconsin Life"
