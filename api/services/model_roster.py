@@ -73,6 +73,59 @@ async def fetch_openrouter_models() -> Optional[List[dict]]:
         return None
 
 
+# Raw catalog cache for per-model capability lookups (reasoning). Kept apart from
+# the classified-roster cache above: that one holds only family-matched models.
+_catalog_cache: Dict[str, Any] = {"data": None, "expires": 0.0}
+
+# OpenRouter reasoning efforts, weakest first. "none" is not here on purpose: it
+# is the off switch, which mandatory-reasoning models don't offer (#465).
+REASONING_EFFORT_ORDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+async def get_catalog() -> Optional[List[dict]]:
+    """The raw OpenRouter catalog, cached for CACHE_TTL_SECONDS.
+
+    A failed refresh returns the last good copy -- a stale capability answer
+    beats none -- so this is None only if no fetch has ever succeeded.
+    """
+    now = time.time()
+    if _catalog_cache["data"] is not None and now < _catalog_cache["expires"]:
+        return _catalog_cache["data"]
+    raw = await fetch_openrouter_models()
+    if raw:
+        _catalog_cache["data"] = raw
+        _catalog_cache["expires"] = now + CACHE_TTL_SECONDS
+        return raw
+    return _catalog_cache["data"]
+
+
+async def reasoning_caps(model_id: Optional[str]) -> Optional[dict]:
+    """The catalog's ``reasoning`` block for ``model_id``, e.g.
+    ``{"mandatory": True, "supported_efforts": ["max", ..., "low"]}``.
+
+    ``{}`` when the model is listed without one; None when the model or the
+    catalog is unknown -- callers then keep their default behaviour.
+    """
+    if not model_id:
+        return None
+    raw = await get_catalog()
+    if not raw:
+        return None
+    for m in raw:
+        if m.get("id") == model_id:
+            return m.get("reasoning") or {}
+    return None
+
+
+def lowest_reasoning_effort(caps: Optional[dict]) -> Optional[str]:
+    """Weakest effort the model supports, or None if it lists none we know."""
+    efforts = (caps or {}).get("supported_efforts") or []
+    for effort in REASONING_EFFORT_ORDER:
+        if effort in efforts:
+            return effort
+    return None
+
+
 def _classify_models(raw_models: List[dict], families: List[dict]) -> List[dict]:
     """Filter and classify raw OpenRouter models using family patterns.
 
@@ -268,11 +321,15 @@ def invalidate_cache() -> None:
     """Clear the model roster cache, forcing a refresh on next call."""
     _cache["models"] = None
     _cache["expires"] = 0.0
+    _catalog_cache["data"] = None
+    _catalog_cache["expires"] = 0.0
 
 
 async def newest_in_family(family: str, exclude_variants: list) -> Optional[str]:
     """Newest anthropic/* model id in `family` by OpenRouter `created`, excluding
-    any id containing an excluded variant token (e.g. 'fast', 'fable').
+    any id containing an excluded variant token (e.g. 'fast', 'fable') and any
+    ``:``-suffixed variant. Every model has a ``:batch`` twin with the same
+    ``created`` stamp, so without that a tie could resolve to the batch endpoint.
 
     Returns None on fetch failure or no match — callers fall through to
     pause-and-suggest rather than guessing.
@@ -284,7 +341,7 @@ async def newest_in_family(family: str, exclude_variants: list) -> Optional[str]
     candidates = []
     for m in raw:
         mid = (m.get("id") or "").lower()
-        if not mid.startswith("anthropic/") or family not in mid:
+        if not mid.startswith("anthropic/") or family not in mid or ":" in mid:
             continue
         if any(v.lower() in mid for v in exclude_variants):
             continue
