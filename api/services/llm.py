@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,26 @@ MALFORMED_BODY_PREFIX_CHARS = 300
 # Default completion cap when neither the caller nor the backend config sets one.
 # Matches the OpenAI-compatible path's long-standing default.
 DEFAULT_MAX_TOKENS = 4096
+
+# OpenRouter's HTTP 400 text when a model refuses ``reasoning: {enabled: false}``
+# (seen on anthropic/claude-sonnet-5.5, #465). Lower-cased for matching.
+REASONING_MANDATORY_MARKER = "reasoning is mandatory"
+
+# Output tokens held back for reasoning on mandatory-reasoning models when sizing
+# chunks (#465: 7.6k-7.9k measured on Sonnet 5.5). Overridable in config.
+DEFAULT_REASONING_RESERVE = 8000
+
+# Upper bound on any single HTTP call; per-backend ``timeout`` values sit below it.
+HTTP_TIMEOUT_CEILING_S = 600.0
+
+# Per-job alias pins kept in memory; older jobs' pins are dropped first.
+MAX_PINNED_JOBS = 64
+
+
+def _reasoning_off_requested(payload: Dict[str, Any]) -> bool:
+    """True when the caller asked OpenRouter to switch reasoning off."""
+    reasoning = payload.get("reasoning")
+    return isinstance(reasoning, dict) and reasoning.get("enabled") is False
 
 
 class CostCapExceededError(Exception):
@@ -266,8 +287,8 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
     # Claude via OpenRouter — tier 0/1/2 (pricing per 1M tokens)
-    "anthropic/claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "anthropic/claude-haiku-4.5": {"input": 0.80, "output": 4.00},
+    "anthropic/claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+    "anthropic/claude-haiku-4.5": {"input": 1.00, "output": 5.00},
     "anthropic/claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
     "anthropic/claude-opus-4-5-20250514": {"input": 15.00, "output": 75.00},
     "anthropic/claude-sonnet-4.6": {"input": 3.00, "output": 15.00},
@@ -513,6 +534,15 @@ def _backend_cost(config: Dict[str, Any], model: str, input_tokens: int, output_
     return calculate_cost(model, input_tokens, output_tokens)
 
 
+def _reported_cost(usage: dict) -> Optional[float]:
+    """The cost OpenRouter billed for a call, or None if it didn't say."""
+    for key in ("cost", "total_cost"):
+        value = (usage or {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
 def calculate_cost(
     model: str,
     input_tokens: int,
@@ -626,8 +656,11 @@ class LLMClient:
             f"Model '{model}' is not in allowlist. " f"Allowed: {', '.join(self.model_allowlist)}"
         )
 
-    def check_token_cost(self, model: str) -> None:
+    def check_token_cost(self, model: str, pricing: Optional[Dict[str, float]] = None) -> None:
         """Check if model's per-token cost is within safety limits.
+
+        ``pricing`` ($/M input and output) is the catalog's price, used for a
+        model MODEL_PRICING doesn't list.
 
         Raises:
             TokenCostTooHighError: If model is too expensive
@@ -635,9 +668,10 @@ class LLMClient:
         if not self.enforce_guards:
             return
 
-        pricing = MODEL_PRICING.get(model)
+        pricing = MODEL_PRICING.get(model) or pricing
         if pricing is None:
-            # Unknown model - be conservative and allow (but log warning)
+            # Unpriced (not in MODEL_PRICING, and no catalog price): allow.
+            # chat() warns when this happens to an OpenRouter model.
             return
 
         # Calculate average cost per 1K tokens (weighted toward output)
@@ -689,7 +723,11 @@ class LLMClient:
                     await self._http_client.aclose()
                 except Exception:
                     pass  # Already broken, ignore
-            self._http_client = httpx.AsyncClient(timeout=180.0)
+            # A ceiling, not the limit: the worker enforces each backend's own
+            # ``timeout`` per call. At 180 s this capped every non-streamed
+            # completion, so a long formatter call (32k max_tokens with reasoning)
+            # read-timed-out regardless of its backend setting (#465).
+            self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT_CEILING_S, connect=15.0))
         return self._http_client
 
     async def close(self) -> None:
@@ -723,6 +761,58 @@ class LLMClient:
             raise ValueError(f"Unknown backend: {backend_name}")
 
         return backends[backend_name]
+
+    def reset_job_models(self, job_id: Optional[int]) -> None:
+        """Forget a job's alias pins so this run resolves afresh (called at job start).
+
+        A retry is a new run: it should get whatever the alias points at now, not
+        what it pointed at during an earlier attempt.
+        """
+        self.__dict__.setdefault("_job_model_pins", OrderedDict()).pop(job_id, None)
+
+    async def resolve_model_id(self, model_id: Optional[str], job_id: Optional[int] = None) -> Optional[str]:
+        """Concrete model id for ``model_id``; a pinned id passes through unchanged.
+
+        An OpenRouter alias resolves once per job and stays pinned for that job,
+        so every chunk, retry and re-validate runs on the same model even if the
+        alias moves mid-job. None if the alias has never resolved (the caller then
+        falls back to the backend's model).
+        """
+        from api.services import model_roster
+
+        if not model_roster.is_model_alias(model_id):
+            return model_id
+        pins = self.__dict__.setdefault("_job_model_pins", OrderedDict())
+        job_pins = pins.get(job_id) if job_id is not None else None
+        if job_pins and model_id in job_pins:
+            return job_pins[model_id]
+        resolved = await model_roster.resolve_alias(model_id)
+        if resolved is None:
+            logger.warning("Model alias %s did not resolve; using the backend's model", model_id)
+            return None
+        if job_id is not None:
+            pins.setdefault(job_id, {})[model_id] = resolved
+            pins.move_to_end(job_id)
+            while len(pins) > MAX_PINNED_JOBS:
+                pins.popitem(last=False)
+        return resolved
+
+    async def reasoning_reserve(self, model: Optional[str]) -> int:
+        """Output tokens to hold back for reasoning that can't be switched off.
+
+        A mandatory-reasoning model spends part of ``max_tokens`` thinking even
+        when the phase asks for reasoning off (#465 measured 7.6k-7.9k on
+        Sonnet 5.5, regardless of chunk size), so an output budget sized on the
+        full cap under-chunks. 0 for every other model, or if the catalog can't
+        say. Configurable as ``routing.reasoning.reserve_tokens``.
+        """
+        from api.services import model_roster
+
+        caps = await model_roster.reasoning_caps(model)
+        if not (caps and caps.get("mandatory")):
+            return 0
+        reserve = self.config.get("routing", {}).get("reasoning", {}).get("reserve_tokens", DEFAULT_REASONING_RESERVE)
+        return int(reserve)
 
     def get_backend_for_phase(self, phase: str) -> str:
         """Get the configured backend name for a phase.
@@ -793,6 +883,12 @@ class LLMClient:
         else:
             model_id = None
 
+        # An alias ("~anthropic/claude-sonnet-latest") becomes the concrete id it
+        # points at, pinned for the rest of the job; everything downstream (guards,
+        # cost, phase rows, Langfuse) sees only the concrete id (#499).
+        if model_id:
+            model_id = await self.resolve_model_id(model_id, job_id)
+
         if not model_id:
             model_id = _resolve_model(backend_config) or backend_config.get("fallback_model")
 
@@ -802,7 +898,17 @@ class LLMClient:
         # Safety guards - check before making request
         self.check_run_cost_cap()
         self.check_model_allowed(model_id)
-        self.check_token_cost(model_id)
+        # MODEL_PRICING doesn't list the models "latest" aliases resolve to, and
+        # an unpriced model passes the guard, so price OpenRouter models from
+        # the catalog. Local backends aren't in it; skip the lookup for them.
+        catalog_price = None
+        if backend_config.get("type") == "openrouter" and model_id not in MODEL_PRICING:
+            from api.services import model_roster
+
+            catalog_price = await model_roster.catalog_pricing(model_id)
+            if catalog_price is None:
+                logger.warning("Cost guard: no catalog price for %s; allowing it unchecked", model_id)
+        self.check_token_cost(model_id, pricing=catalog_price)
 
         # Get API key
         api_key = self.get_api_key(backend_config)
@@ -975,7 +1081,28 @@ class LLMClient:
         # mid-transcript (#403). Precedence: explicit kwarg > backend config > 4096.
         payload["max_tokens"] = payload.get("max_tokens") or config.get("max_tokens", DEFAULT_MAX_TOKENS)
 
+        # A phase asks for reasoning OFF as intent; translate it for the model
+        # actually being called. Models whose reasoning is mandatory reject
+        # ``enabled: false`` with HTTP 400, so they get their weakest effort (#465).
+        if _reasoning_off_requested(payload):
+            from api.services import model_roster
+
+            caps = await model_roster.reasoning_caps(model)
+            if caps and caps.get("mandatory"):
+                payload["reasoning"] = {"effort": model_roster.lowest_reasoning_effort(caps) or "low"}
+
         response = await self._post_openrouter(config["endpoint"], headers, payload)
+
+        # The catalog was unreachable or didn't list the model, and it turned out
+        # to be mandatory-reasoning: retry once at low effort rather than fail.
+        if (
+            response.status_code == 400
+            and _reasoning_off_requested(payload)
+            and REASONING_MANDATORY_MARKER in (response.text or "").lower()
+        ):
+            logger.warning("Reasoning is mandatory for %s; retrying at low effort", model)
+            payload["reasoning"] = {"effort": "low"}
+            response = await self._post_openrouter(config["endpoint"], headers, payload)
 
         # Log error details before raising
         if response.status_code >= 400:
@@ -1007,10 +1134,11 @@ class LLMClient:
         total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
         reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
 
-        # OpenRouter may report cost directly
-        openrouter_cost = None
-        if "usage" in data and "total_cost" in data["usage"]:
-            openrouter_cost = data["usage"]["total_cost"]
+        # OpenRouter reports the billed amount as usage.cost on every response.
+        # Reading the nonexistent usage.total_cost priced every call from
+        # MODEL_PRICING, which has no entry for newer models, so they fell to
+        # the flat $1/$3 guess.
+        openrouter_cost = _reported_cost(usage)
 
         # Calculate cost (force $0 for free tier models)
         actual_model = data.get("model", model)

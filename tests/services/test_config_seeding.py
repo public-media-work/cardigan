@@ -9,7 +9,13 @@ import json
 
 import pytest
 
-from api.services.config_path import config_drift, merge_missing, resolve_config_path
+from api.services.config_path import (
+    apply_superseded_defaults,
+    config_drift,
+    load_superseded,
+    merge_missing,
+    resolve_config_path,
+)
 
 # Shape of #409's additions: a new block and new leaves, both nested under an
 # existing top-level "routing" object.
@@ -219,3 +225,120 @@ class TestDriftScript:
 
     def test_strict_exits_one_when_it_cannot_compare(self, run):
         assert run("{not json", "--strict") == 1
+
+    def test_old_defaults_are_labelled_as_moving_not_kept(self, run, capsys, monkeypatch, tmp_path):
+        superseded = tmp_path / "superseded.json"
+        superseded.write_text(json.dumps({"superseded": [OLD_MAX_TOKENS]}))
+        monkeypatch.setattr("api.services.config_path.SUPERSEDED_DEFAULTS", superseded)
+        live = _live()
+        live["backends"]["openrouter"]["max_tokens"] = 8192  # an old shipped default
+
+        assert run(json.dumps(live), "--strict") == 0, "only an old default differs, and it will move"
+        out = capsys.readouterr().out
+        assert "moves to the repo value at restart" in out
+        assert "Other live values are kept" not in out
+
+
+# --- Changed defaults reaching existing live files (#499) ---------------------
+
+OLD_MAX_TOKENS = {"path": ["backends", "openrouter", "max_tokens"], "was": [4096, 8192]}
+OLD_ANALYST = {"path": ["phase_models", "analyst"], "was": ["anthropic/claude-haiku-4.5"]}
+NEW = {
+    "backends": {"openrouter": {"max_tokens": 16384}},
+    "phase_models": {"analyst": "~anthropic/claude-haiku-latest", "formatter": "~anthropic/claude-sonnet-latest"},
+}
+
+
+class TestApplySupersededDefaults:
+    def test_old_default_follows_the_new_default(self):
+        live = {
+            "backends": {"openrouter": {"max_tokens": 4096}},
+            "phase_models": {"analyst": "anthropic/claude-haiku-4.5"},
+        }
+        moved = apply_superseded_defaults(live, NEW, [OLD_MAX_TOKENS, OLD_ANALYST])
+        assert live["backends"]["openrouter"]["max_tokens"] == 16384
+        assert live["phase_models"]["analyst"] == "~anthropic/claude-haiku-latest"
+        assert set(moved) == {
+            ("backends.openrouter.max_tokens", 4096, 16384),
+            ("phase_models.analyst", "anthropic/claude-haiku-4.5", "~anthropic/claude-haiku-latest"),
+        }
+
+    def test_deliberate_value_is_kept(self):
+        """A value nobody shipped was chosen on purpose (Settings, hand edit)."""
+        live = {
+            "backends": {"openrouter": {"max_tokens": 12000}},
+            "phase_models": {"analyst": "anthropic/claude-opus-4.6"},
+        }
+        assert apply_superseded_defaults(live, NEW, [OLD_MAX_TOKENS, OLD_ANALYST]) == []
+        assert live["backends"]["openrouter"]["max_tokens"] == 12000
+        assert live["phase_models"]["analyst"] == "anthropic/claude-opus-4.6"
+
+    def test_missing_paths_are_skipped(self):
+        assert apply_superseded_defaults({}, NEW, [OLD_MAX_TOKENS]) == []
+        assert apply_superseded_defaults({"backends": {"openrouter": {"max_tokens": 4096}}}, {}, [OLD_MAX_TOKENS]) == []
+        assert apply_superseded_defaults({"a": 1}, {"a": 2}, [{"path": [], "was": [1]}]) == []
+
+    def test_top_level_path(self):
+        live = {"primary_backend": "openrouter-old"}
+        moved = apply_superseded_defaults(
+            live, {"primary_backend": "openrouter"}, [{"path": ["primary_backend"], "was": ["openrouter-old"]}]
+        )
+        assert live == {"primary_backend": "openrouter"}
+        assert moved == [("primary_backend", "openrouter-old", "openrouter")]
+
+    def test_resolve_config_path_moves_old_defaults_at_startup(self, monkeypatch, tmp_path):
+        default = tmp_path / "default.json"
+        default.write_text(json.dumps(NEW))
+        superseded = tmp_path / "superseded.json"
+        superseded.write_text(json.dumps({"superseded": [OLD_MAX_TOKENS, OLD_ANALYST]}))
+        target = tmp_path / "state" / "llm-config.json"
+        target.parent.mkdir()
+        target.write_text(
+            json.dumps(
+                {
+                    "backends": {"openrouter": {"max_tokens": 4096}},
+                    "phase_models": {"analyst": "anthropic/claude-haiku-4.5", "formatter": "anthropic/claude-opus-4.6"},
+                }
+            )
+        )
+        monkeypatch.setattr("api.services.config_path.DEFAULT_CONFIG", default)
+        monkeypatch.setattr("api.services.config_path.SUPERSEDED_DEFAULTS", superseded)
+        monkeypatch.setenv("LLM_CONFIG_PATH", str(target))
+
+        resolve_config_path()
+
+        live = json.loads(target.read_text())
+        assert live["backends"]["openrouter"]["max_tokens"] == 16384
+        assert live["phase_models"]["analyst"] == "~anthropic/claude-haiku-latest"
+        assert live["phase_models"]["formatter"] == "anthropic/claude-opus-4.6", "a chosen model must survive"
+
+    def test_missing_superseded_file_is_harmless(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("api.services.config_path.SUPERSEDED_DEFAULTS", tmp_path / "absent.json")
+        assert load_superseded() == []
+
+
+def test_packaged_superseded_entries_point_at_real_changed_defaults():
+    """Every entry names a path the packaged default has, with a value it no longer ships."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "config"
+    default = json.loads((root / "llm-config.json").read_text())
+    entries = json.loads((root / "superseded-defaults.json").read_text())["superseded"]
+    assert entries
+    for entry in entries:
+        value = default
+        for key in entry["path"]:
+            assert key in value, f"{entry['path']} is not in config/llm-config.json"
+            value = value[key]
+        assert value not in entry["was"], f"{entry['path']}: the current default is listed as superseded"
+
+
+def test_packaged_phase_models_all_follow_latest_in_family():
+    """#499: main ships "latest in family" for every pipeline phase."""
+    from pathlib import Path
+
+    from api.services.model_roster import is_model_alias
+
+    default = json.loads((Path(__file__).resolve().parents[2] / "config" / "llm-config.json").read_text())
+    pinned = {phase: m for phase, m in default["phase_models"].items() if not is_model_alias(m)}
+    assert not pinned, f"phases still pinned to a concrete model: {pinned}"

@@ -79,12 +79,45 @@ def test_no_flags_returns_empty():
 
 @pytest.mark.asyncio
 async def test_resolve_escalated_model_bumps_and_resolves():
-    with patch.object(
-        escalation.model_roster, "newest_in_family", AsyncMock(return_value="anthropic/claude-sonnet-4-6")
-    ) as m:
+    """No alias in the catalog: fall back to the newest-by-``created`` search."""
+    with (
+        patch.object(escalation.model_roster, "resolve_alias", AsyncMock(return_value=None)),
+        patch.object(
+            escalation.model_roster, "newest_in_family", AsyncMock(return_value="anthropic/claude-sonnet-4-6")
+        ) as m,
+    ):
         got = await escalation.resolve_escalated_model("anthropic/claude-4.5-haiku-20251001", ["fast", "fable"])
     assert got == "anthropic/claude-sonnet-4-6"
     m.assert_awaited_once_with("sonnet", ["fast", "fable"])
+
+
+@pytest.mark.asyncio
+async def test_resolve_escalated_model_prefers_family_alias():
+    """OpenRouter's "latest" alias names the target; no created-sort guess (#499)."""
+    alias = AsyncMock(return_value="anthropic/claude-sonnet-5.5")
+    newest = AsyncMock()
+    with (
+        patch.object(escalation.model_roster, "resolve_alias", alias),
+        patch.object(escalation.model_roster, "newest_in_family", newest),
+    ):
+        got = await escalation.resolve_escalated_model("anthropic/claude-haiku-4.5", ["fast", "fable"])
+    assert got == "anthropic/claude-sonnet-5.5"
+    alias.assert_awaited_once_with("~anthropic/claude-sonnet-latest")
+    newest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_escalated_model_ignores_alias_onto_excluded_variant():
+    with (
+        patch.object(
+            escalation.model_roster, "resolve_alias", AsyncMock(return_value="anthropic/claude-sonnet-5-fast")
+        ),
+        patch.object(
+            escalation.model_roster, "newest_in_family", AsyncMock(return_value="anthropic/claude-sonnet-5.5")
+        ),
+    ):
+        got = await escalation.resolve_escalated_model("anthropic/claude-haiku-4.5", ["fast", "fable"])
+    assert got == "anthropic/claude-sonnet-5.5"
 
 
 @pytest.mark.asyncio
@@ -190,6 +223,15 @@ def test_nonfixable_review_message_includes_flags():
     assert "Review notes appear in transcript body" in msg
 
 
+def test_nonfixable_review_message_names_the_validator_and_reads_cleanly():
+    """Job 28's message blamed the formatter, doubled a period, and closed with media_id advice."""
+    msg = nonfixable_review_message(["Program header reads 'Wisconsin Life' but the SST program differs."])
+    assert "validator flagged" in msg
+    assert ".." not in msg
+    assert "media_id" not in msg
+    assert "the formatter flagged" not in msg
+
+
 # ---------------------------------------------------------------------------
 # classify_qa_failure -- "[style-nonfixable:...]" prefix (task 2b)
 # ---------------------------------------------------------------------------
@@ -240,3 +282,40 @@ def test_classify_still_skips_genuinely_unfixable_flags():
     for flag in ("Media ID could not be determined", "Speaker remains unidentified", "SEMrush data unavailable"):
         out = classify_qa_failure(_vr(formatter_flags=[flag]), {})
         assert out["escalate"] is False, f"{flag!r} must stay non-fixable"
+
+
+def test_escalated_rerun_refreshes_tokens_not_just_model_and_cost():
+    """Job 26: escalated SEO showed sonnet-5.5 but the first pass's token counts (#500)."""
+    from api.models.job import JobPhase
+    from api.services.worker import _escalated_phase_info, apply_escalated_phase_models
+
+    rerun = {
+        "success": True,
+        "model": "anthropic/claude-sonnet-5.5",
+        "cost": 0.10,
+        "tokens": 18469,
+        "input_tokens": 10384,
+        "output_tokens": 8085,
+    }
+    phases = [
+        {"name": "seo", "model": "anthropic/claude-haiku-4.5", "cost": 0.03, "tokens": 14867, "output_tokens": 4483},
+        JobPhase(name="timestamp", model="anthropic/claude-sonnet-4.6", tokens=17889, output_tokens=419),
+        {"name": "analyst", "model": "anthropic/claude-haiku-4.5", "tokens": 24240},
+    ]
+    escalated = {
+        "seo": _escalated_phase_info(rerun),
+        "timestamp": _escalated_phase_info({"cost": 0.03, "tokens": 23528, "output_tokens": 2249}, "anthropic/x"),
+    }
+
+    out = apply_escalated_phase_models(phases, escalated)
+
+    assert out[0] == {
+        "name": "seo",
+        "model": "anthropic/claude-sonnet-5.5",
+        "cost": 0.10,
+        "tokens": 18469,
+        "input_tokens": 10384,
+        "output_tokens": 8085,
+    }
+    assert (out[1].model, out[1].tokens, out[1].output_tokens) == ("anthropic/x", 23528, 2249)
+    assert out[2] == {"name": "analyst", "model": "anthropic/claude-haiku-4.5", "tokens": 24240}

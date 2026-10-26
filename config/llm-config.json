@@ -25,8 +25,8 @@
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "model": "anthropic/claude-sonnet-4.5",
       "api_key_env": "OPENROUTER_API_KEY",
-      "timeout": 240,
-      "max_tokens": 16384,
+      "timeout": 420,
+      "max_tokens": 32768,
       "cost_per_project": 0.25
     },
     "gemini-flash": {
@@ -58,8 +58,8 @@
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "fallback_model": "anthropic/claude-sonnet-4.6",
       "api_key_env": "OPENROUTER_API_KEY",
-      "timeout": 180,
-      "max_tokens": 16384,
+      "timeout": 420,
+      "max_tokens": 32768,
       "cost_per_project": 0.02
     },
     "openrouter-big-brain": {
@@ -67,8 +67,8 @@
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "fallback_model": "anthropic/claude-opus-4.6",
       "api_key_env": "OPENROUTER_API_KEY",
-      "timeout": 300,
-      "max_tokens": 16384,
+      "timeout": 420,
+      "max_tokens": 32768,
       "cost_per_project": 0.1
     },
     "openrouter-cheapskate": {
@@ -76,8 +76,8 @@
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "fallback_model": "anthropic/claude-haiku-4.5",
       "api_key_env": "OPENROUTER_API_KEY",
-      "timeout": 300,
-      "max_tokens": 16384,
+      "timeout": 420,
+      "max_tokens": 32768,
       "cost_per_project": 0.0,
       "enabled": true
     },
@@ -85,8 +85,8 @@
       "type": "openrouter",
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "api_key_env": "OPENROUTER_API_KEY",
-      "timeout": 300,
-      "max_tokens": 16384
+      "timeout": 420,
+      "max_tokens": 32768
     },
     "local-llm": {
       "type": "openai",
@@ -154,7 +154,8 @@
       "enabled": true
     },
     "reasoning": {
-      "disabled_phases": ["formatter"]
+      "disabled_phases": ["formatter"],
+      "reserve_tokens": 8000
     },
     "chunking": {
       "enabled": true,
@@ -257,12 +258,12 @@
     }
   ],
   "phase_models": {
-    "analyst": "anthropic/claude-haiku-4.5",
-    "formatter": "anthropic/claude-sonnet-4.6",
-    "seo": "anthropic/claude-sonnet-4.6",
-    "validator": "anthropic/claude-haiku-4.5",
-    "timestamp": "anthropic/claude-sonnet-4.6",
-    "copy_editor": "anthropic/claude-opus-4.6"
+    "analyst": "~anthropic/claude-haiku-latest",
+    "formatter": "~anthropic/claude-sonnet-latest",
+    "seo": "~anthropic/claude-sonnet-latest",
+    "validator": "~anthropic/claude-haiku-latest",
+    "timestamp": "~anthropic/claude-sonnet-latest",
+    "copy_editor": "~anthropic/claude-opus-latest"
   },
   "safety": {
     "run_cost_cap": 1.0,

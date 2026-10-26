@@ -164,6 +164,259 @@ def test_packaged_openrouter_backends_all_set_max_tokens():
     assert not uncapped, f"OpenRouter backends without max_tokens fall back to 4096: {uncapped}"
 
 
+def test_packaged_openrouter_backends_share_output_budget():
+    """Every shipped OpenRouter backend matches ``openrouter``'s max_tokens and timeout.
+
+    #503 raised only ``openrouter``; the analyst on ``openrouter-cheapskate``
+    then spent 14,967 of its 16,384 tokens on Haiku 5.5 (cardigan02 job 27),
+    and the copy editor runs mandatory-reasoning Opus on ``openrouter-big-brain``.
+    """
+    import json
+    from pathlib import Path
+
+    config = json.loads((Path(__file__).resolve().parents[1] / "config" / "llm-config.json").read_text())
+    main = config["backends"]["openrouter"]
+    off = {
+        name: (backend.get("max_tokens"), backend.get("timeout"))
+        for name, backend in config["backends"].items()
+        if backend.get("type") == "openrouter"
+        and (backend.get("max_tokens"), backend.get("timeout")) != (main["max_tokens"], main["timeout"])
+    }
+    assert not off, f"OpenRouter backends below openrouter's budget: {off}"
+
+
+MANDATORY_CAPS = {"mandatory": True, "supported_efforts": ["max", "xhigh", "high", "medium", "low"]}
+OPTIONAL_CAPS = {"mandatory": False, "supported_efforts": ["max", "high", "medium", "low", "none"]}
+
+
+def _openrouter_client():
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+    client.config = {}
+    return client
+
+
+async def _send_reasoning_off(client, model="anthropic/claude-sonnet-5.5"):
+    return await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+        reasoning={"enabled": False},
+    )
+
+
+async def test_reasoning_off_becomes_lowest_effort_on_mandatory_model(monkeypatch):
+    """Sonnet 5.5 rejects ``enabled: false`` with HTTP 400; send its weakest effort (#465)."""
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=MANDATORY_CAPS))
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await _send_reasoning_off(client)
+
+    assert captured["payload"]["reasoning"] == {"effort": "low"}
+
+
+async def test_reasoning_off_kept_on_optional_model(monkeypatch):
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=OPTIONAL_CAPS))
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await _send_reasoning_off(client, model="anthropic/claude-sonnet-4.6")
+
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+
+
+async def test_reasoning_off_kept_when_catalog_unknown(monkeypatch):
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=None))
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await _send_reasoning_off(client)
+
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+
+
+class FakeResp400ReasoningMandatory:
+    status_code = 400
+    text = '{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}'
+
+    def json(self):
+        return {"error": {"message": "Reasoning is mandatory for this endpoint and cannot be disabled.", "code": 400}}
+
+    def raise_for_status(self):
+        raise AssertionError("the 400 should have been retried, not raised")
+
+
+async def test_mandatory_reasoning_400_retries_once_at_low_effort(monkeypatch):
+    """Catalog couldn't say, the provider refused reasoning-off: retry at low effort."""
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=None))
+    client = _openrouter_client()
+    sent = []
+
+    async def _post(endpoint, headers, payload):
+        sent.append(dict(payload))
+        return FakeResp400ReasoningMandatory() if len(sent) == 1 else FakeRespOK()
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    resp = await _send_reasoning_off(client)
+
+    assert [p["reasoning"] for p in sent] == [{"enabled": False}, {"effort": "low"}]
+    assert resp.content == "hello"
+
+
+async def test_no_reasoning_lookup_without_reasoning_off(monkeypatch):
+    """Calls that don't ask for reasoning off never touch the catalog."""
+    from api.services import model_roster
+
+    caps = AsyncMock(return_value=MANDATORY_CAPS)
+    monkeypatch.setattr(model_roster, "reasoning_caps", caps)
+    client = _openrouter_client()
+    captured = {}
+    monkeypatch.setattr(client, "_post_openrouter", _capturing_post(captured))
+
+    await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5.5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+    )
+
+    caps.assert_not_awaited()
+    assert "reasoning" not in captured["payload"]
+
+
+SONNET_ALIAS = "~anthropic/claude-sonnet-latest"
+
+
+async def test_resolve_model_id_passes_pinned_ids_through(monkeypatch):
+    from api.services import model_roster
+
+    resolve = AsyncMock()
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+    assert await client.resolve_model_id("anthropic/claude-sonnet-4.6", job_id=1) == "anthropic/claude-sonnet-4.6"
+    assert await client.resolve_model_id(None, job_id=1) is None
+    resolve.assert_not_awaited()
+
+
+async def test_alias_is_pinned_for_the_rest_of_the_job(monkeypatch):
+    """The alias moving mid-job must not change the model a job runs on (#499)."""
+    from api.services import model_roster
+
+    resolve = AsyncMock(side_effect=["anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-6"])
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-5.5"
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-5.5"
+    assert resolve.await_count == 1
+    # A different job resolves for itself and sees where the alias points now.
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=8) == "anthropic/claude-sonnet-6"
+
+
+async def test_reset_job_models_lets_a_retry_resolve_afresh(monkeypatch):
+    from api.services import model_roster
+
+    resolve = AsyncMock(side_effect=["anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-6"])
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+
+    await client.resolve_model_id(SONNET_ALIAS, job_id=7)
+    client.reset_job_models(7)
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-6"
+
+
+async def test_unresolvable_alias_returns_none_and_is_not_pinned(monkeypatch):
+    from api.services import model_roster
+
+    resolve = AsyncMock(side_effect=[None, "anthropic/claude-sonnet-5.5"])
+    monkeypatch.setattr(model_roster, "resolve_alias", resolve)
+    client = _openrouter_client()
+
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) is None
+    assert await client.resolve_model_id(SONNET_ALIAS, job_id=7) == "anthropic/claude-sonnet-5.5"
+
+
+async def test_alias_pins_are_bounded(monkeypatch):
+    from api.services import llm as llm_mod
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "resolve_alias", AsyncMock(return_value="anthropic/claude-sonnet-5.5"))
+    monkeypatch.setattr(llm_mod, "MAX_PINNED_JOBS", 3)
+    client = _openrouter_client()
+    for job_id in range(5):
+        await client.resolve_model_id(SONNET_ALIAS, job_id=job_id)
+    assert list(client._job_model_pins) == [2, 3, 4]
+
+
+async def test_chat_sends_the_resolved_id_never_the_alias(monkeypatch):
+    """Guards, cost and the provider call all see the concrete model id."""
+    from api.services import model_roster
+
+    monkeypatch.setattr(model_roster, "resolve_alias", AsyncMock(return_value="anthropic/claude-sonnet-5.5"))
+    client = _openrouter_client()
+    client.config = {
+        "phase_models": {"formatter": SONNET_ALIAS},
+        "backends": {"openrouter": {"type": "openrouter", "endpoint": "https://openrouter.ai/x"}},
+    }
+    seen = {}
+
+    def guard(name):
+        return lambda model, **_: seen.setdefault(name, model)
+
+    monkeypatch.setattr(model_roster, "catalog_pricing", AsyncMock(return_value=None))
+
+    monkeypatch.setattr(client, "check_run_cost_cap", lambda: None)
+    monkeypatch.setattr(client, "check_model_allowed", guard("allowlist"))
+    monkeypatch.setattr(client, "check_token_cost", guard("token_cost"))
+    monkeypatch.setattr(client, "get_api_key", lambda cfg: "fake-key")
+
+    class Stop(Exception):
+        pass
+
+    async def fake_call(config, model, messages, api_key, **kwargs):
+        seen["call"] = model
+        raise Stop
+
+    monkeypatch.setattr(client, "_call_openrouter", fake_call)
+
+    with pytest.raises(Stop):
+        await client.chat(
+            messages=[{"role": "user", "content": "hi"}], backend="openrouter", phase="formatter", job_id=3
+        )
+
+    assert seen == {key: "anthropic/claude-sonnet-5.5" for key in ("allowlist", "token_cost", "call")}
+    assert client.active_model == "anthropic/claude-sonnet-5.5"
+
+
+async def test_reasoning_reserve_only_for_mandatory_models(monkeypatch):
+    from api.services import model_roster
+
+    client = _openrouter_client()
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=MANDATORY_CAPS))
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-5.5") == 8000
+    client.config = {"routing": {"reasoning": {"reserve_tokens": 6000}}}
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-5.5") == 6000
+
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=OPTIONAL_CAPS))
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-4.6") == 0
+    monkeypatch.setattr(model_roster, "reasoning_caps", AsyncMock(return_value=None))
+    assert await client.reasoning_reserve("anthropic/claude-sonnet-5.5") == 0
+
+
 async def test_call_openrouter_raises_on_length_finish_reason(monkeypatch):
     """A provider-side length cutoff must fail the phase, not return success (#403).
 
@@ -364,3 +617,99 @@ def test_tracker_books_unusable_call():
     assert tracker.total_output_tokens == 16384
     assert tracker.call_count == 1
     assert tracker.calls[0]["unusable"] is True
+
+
+class FakeRespBilled(FakeRespReasoning):
+    """OpenRouter body with the billed amount in usage.cost, as OpenRouter sends it."""
+
+    def __init__(self, cost, **kw):
+        super().__init__(**kw)
+        self._cost = cost
+
+    def json(self):
+        body = super().json()
+        body["usage"]["cost"] = self._cost
+        return body
+
+
+async def test_openrouter_cost_comes_from_usage_cost(monkeypatch):
+    """The recorded cost is what OpenRouter billed, not the MODEL_PRICING guess.
+
+    Reading usage.total_cost (a field OpenRouter never sends) priced every
+    5.5-family call at the flat $1/$3 fallback on cardigan02 (job 27).
+    """
+    client = LLMClient.__new__(LLMClient)
+    client.active_backend = "openrouter"
+
+    async def _post(endpoint, headers, payload):
+        return FakeRespBilled(cost=0.0123, completion_tokens=2000, reasoning_tokens=500)
+
+    monkeypatch.setattr(client, "_post_openrouter", _post)
+
+    resp = await client._call_openrouter(
+        config={"endpoint": "https://openrouter.ai/api/v1/chat/completions"},
+        model="anthropic/claude-sonnet-5",
+        messages=[{"role": "user", "content": "hi"}],
+        api_key="fake-key",
+    )
+
+    assert resp.cost == pytest.approx(0.0123)
+
+
+def test_reported_cost_reads_cost_then_total_cost():
+    from api.services.llm import _reported_cost
+
+    assert _reported_cost({"cost": 0.5}) == 0.5
+    assert _reported_cost({"cost": 0}) == 0.0
+    assert _reported_cost({"total_cost": 0.25}) == 0.25
+    assert _reported_cost({"cost": "0.5"}) is None
+    assert _reported_cost({"cost": True}) is None
+    assert _reported_cost({}) is None
+    assert _reported_cost(None) is None
+
+
+def test_token_cost_guard_prices_unlisted_models_from_the_catalog():
+    """A model missing from MODEL_PRICING used to pass the guard unpriced.
+
+    Every model a "latest" alias resolves to is missing from it, so without the
+    catalog price nothing stops an alias moving to a far pricier model.
+    """
+    from api.services.llm import TokenCostTooHighError
+
+    client = LLMClient.__new__(LLMClient)
+    client.enforce_guards = True
+    client.max_cost_per_1k_tokens = 0.05
+
+    client.check_token_cost("anthropic/claude-opus-5.5", pricing={"input": 4.0, "output": 20.0})
+    with pytest.raises(TokenCostTooHighError):
+        client.check_token_cost("anthropic/claude-opus-9", pricing={"input": 30.0, "output": 150.0})
+    client.check_token_cost("anthropic/claude-unpriced")  # no price anywhere: still allowed
+
+
+async def test_chat_passes_catalog_price_to_the_guard(monkeypatch):
+    from api.services import model_roster
+
+    client = _openrouter_client()
+    client.config = {
+        "phase_models": {"copy_editor": "anthropic/claude-opus-5.5"},
+        "backends": {"openrouter": {"type": "openrouter", "endpoint": "https://openrouter.ai/x"}},
+    }
+    seen = {}
+    monkeypatch.setattr(model_roster, "catalog_pricing", AsyncMock(return_value={"input": 4.0, "output": 20.0}))
+    monkeypatch.setattr(client, "check_run_cost_cap", lambda: None)
+    monkeypatch.setattr(client, "check_model_allowed", lambda model: None)
+    monkeypatch.setattr(client, "check_token_cost", lambda model, pricing=None: seen.update(pricing=pricing))
+    monkeypatch.setattr(client, "get_api_key", lambda cfg: "fake-key")
+
+    class Stop(Exception):
+        pass
+
+    async def fake_call(config, model, messages, api_key, **kwargs):
+        raise Stop
+
+    monkeypatch.setattr(client, "_call_openrouter", fake_call)
+
+    with pytest.raises(Stop):
+        await client.chat(messages=[{"role": "user", "content": "hi"}], backend="openrouter", phase="copy_editor")
+
+    assert seen["pricing"] == {"input": 4.0, "output": 20.0}

@@ -104,6 +104,19 @@ SST_PROJECT_FIELD_MAP = {
     "project_description": "Project Description",
 }
 
+# Projects are often season-scoped ("Wisconsin Life | Season 13"); the
+# formatter's **Program:** header is the show, and the validator holds it to
+# the SST value, so the season designation comes off (cardigan02 job 28).
+_SEASON_SUFFIX = re.compile(r"\s*\|\s*Season\s+\d+\s*$", re.IGNORECASE)
+
+
+def program_from_project_name(name: Any) -> Any:
+    """The program a Project name stands for: its name minus a "| Season N" suffix."""
+    if not isinstance(name, str):
+        return name
+    return _SEASON_SUFFIX.sub("", name).strip() or name
+
+
 # The complete SST-table read surface, pinned against the schema snapshot.
 SST_CONTEXT_AIRTABLE_FIELDS = tuple(SST_CONTEXT_FIELD_MAP.values()) + _SST_EXTRA_FIELDS
 
@@ -194,13 +207,25 @@ def apply_validator_model(phases: list, model: Optional[str]) -> list:
     return phases
 
 
+ESCALATED_PHASE_FIELDS = ("model", "cost", "tokens", "input_tokens", "output_tokens")
+
+
+def _escalated_phase_info(result: Dict[str, Any], fallback_model: Optional[str] = None) -> Dict[str, Any]:
+    """The per-phase attribution fields from one ``_run_phase`` result."""
+    info = {key: result.get(key) for key in ESCALATED_PHASE_FIELDS}
+    info["model"] = info["model"] or fallback_model
+    return info
+
+
 def apply_escalated_phase_models(phases: Optional[list], escalated: Dict[str, dict]) -> Optional[list]:
-    """Refresh persisted ``phases[]`` with the model/cost from escalated re-runs (#243).
+    """Refresh persisted ``phases[]`` with the model/cost/tokens from escalated re-runs (#243).
 
     The escalated ``_run_phase`` calls in the QA gate don't update the job's
     persisted ``phases[]`` (only the main loop does), so per-phase attribution
-    would otherwise stay stale at the pre-escalation model. ``escalated`` maps
-    ``phase_name -> {"model": ..., "cost": ...}``. Handles both ``JobPhase``
+    would otherwise stay stale at the pre-escalation run. ``escalated`` maps
+    ``phase_name -> {"model", "cost", "tokens", "input_tokens", "output_tokens"}``;
+    absent keys leave the field alone. Token counts were once left at the first
+    pass's values while model and cost moved on (#500). Handles both ``JobPhase``
     objects and dict entries. Returns the (mutated) ``phases`` list.
     """
     if not phases:
@@ -210,18 +235,14 @@ def apply_escalated_phase_models(phases: Optional[list], escalated: Dict[str, di
         info = escalated.get(name) if name else None
         if not info:
             continue
-        model = info.get("model")
-        cost = info.get("cost")
-        if isinstance(p, dict):
-            if model:
-                p["model"] = model
-            if cost is not None:
-                p["cost"] = cost
-        else:
-            if model:
-                p.model = model
-            if cost is not None:
-                p.cost = cost
+        updates = {key: info.get(key) for key in ESCALATED_PHASE_FIELDS if info.get(key) is not None}
+        if not info.get("model"):
+            updates.pop("model", None)
+        for key, value in updates.items():
+            if isinstance(p, dict):
+                p[key] = value
+            else:
+                setattr(p, key, value)
     return phases
 
 
@@ -796,6 +817,8 @@ Extract any name or spelling corrections that should be added to the glossary. S
         # Pick up any model/config changes made via the Settings API since
         # this worker process started (api and worker are separate containers).
         self.llm.reload_config()
+        # Model aliases ("latest Sonnet") resolve once per run and stay pinned for it.
+        self.llm.reset_job_models(job_id)
         project_name = job.get("project_name") or "Unknown"
 
         logger.info("Processing job", extra={"job_id": job_id, "project_name": project_name})
@@ -1751,7 +1774,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # re-validation below judges the ESCALATED work, not the stale
                 # pre-escalation output (mirrors the main phase loop) (#243 fix).
                 context[f"{phase_name}_output"] = res.get("output", "")
-                escalated_models[phase_name] = {"model": res.get("model") or target, "cost": res.get("cost")}
+                escalated_models[phase_name] = _escalated_phase_info(res, fallback_model=target)
                 reran = True
 
         if not reran:
@@ -1768,7 +1791,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
         if reval and reval.get("success"):
             verdict = self._parse_validation_result(reval.get("output", ""))
             verdict = await self._apply_style_lint(job_id, context, verdict)
-            escalated_models["validator"] = {"model": reval.get("model"), "cost": reval.get("cost")}
+            escalated_models["validator"] = _escalated_phase_info(reval)
         else:
             verdict = {"overall": "fail"}
 
@@ -1860,6 +1883,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                         project_fields = project_record.get("fields", {})
                         for key, name in SST_PROJECT_FIELD_MAP.items():
                             sst_context[key] = project_fields.get(name)
+                        sst_context["program"] = program_from_project_name(sst_context.get("program"))
                 except Exception as e:
                     logger.debug("Failed to fetch linked Project (non-fatal)", extra={"error": str(e)})
 
@@ -2597,6 +2621,13 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     max_output_tokens = self.llm.get_backend_config(backend).get("max_tokens", DEFAULT_MAX_TOKENS)
                 except Exception:
                     max_output_tokens = DEFAULT_MAX_TOKENS
+                # Reasoning that can't be switched off shares the same cap (#465).
+                formatter_model = await self.llm.resolve_model_id(
+                    model_override or self.llm.config.get("phase_models", {}).get("formatter"), job_id
+                )
+                reserve = await self.llm.reasoning_reserve(formatter_model)
+                if reserve:
+                    max_output_tokens = max(max_output_tokens - reserve, 1)
                 chunks = split_transcript(
                     context.get("transcript", ""),
                     is_srt=is_srt,
