@@ -11,7 +11,7 @@
 - Airtable: READ-ONLY SST lookups (requires `AIRTABLE_API_KEY`)
 
 ## Environment
-- `EDITORIAL_API_URL` (default `http://localhost:8100`) — for production work point this at the homelab container `http://cardigan01:8100`; `localhost` is local dev only. See `CLAUDE.md` › "Deployment Environments".
+- `EDITORIAL_API_URL` (default `http://localhost:8100`) — for production work point this at `https://cardigan.riechers.co` (from the home network); `localhost` is local dev only. See `CLAUDE.md` › "Deployment Environments".
 - `EDITORIAL_OUTPUT_DIR` (default `OUTPUT`)
 - `EDITORIAL_TRANSCRIPTS_DIR` (default `transcripts`)
 - `AIRTABLE_API_KEY` (optional; required for SST lookups)

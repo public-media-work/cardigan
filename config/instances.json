@@ -1,8 +1,8 @@
 [
   {
-    "name": "cardigan01",
-    "url": "http://cardigan01:8100",
-    "web_url": "http://cardigan01:3100",
+    "name": "prod",
+    "url": "https://cardigan.riechers.co",
+    "web_url": "https://cardigan.riechers.co",
     "watcher": false
   },
   {

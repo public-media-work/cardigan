@@ -1,10 +1,10 @@
 # Editorial Assistant API Reference
 
 ## Overview
-- Base URL: `http://cardigan01:8100` (production/homelab — default for real work) · `http://localhost:8100` (local dev only). Target the name `cardigan01`, not a tailnet IP. See `CLAUDE.md` › "Deployment Environments".
+- Base URL: `https://cardigan.riechers.co` (production/homelab — default for real work) · `http://localhost:8100` (local dev only). Use the service name, never a host name or IP. See `CLAUDE.md` › "Deployment Environments".
 - API prefix: `/api`
 - WebSocket: `/api/ws/jobs`
-- Auth: none on the homelab box today (tailnet/LAN-only); when `CARDIGAN_API_KEY` is set, send it as an `X-API-Key` header.
+- Auth: none in the app today. On the home network the name goes through Caddy; off it, Cloudflare Access gates it (an email allowlist), so scripts can't reach it from outside. When `CARDIGAN_API_KEY` is set, send it as an `X-API-Key` header.
 - Response format: JSON unless noted
 - Errors: FastAPI default (`{"detail": "..."}`) unless noted
 

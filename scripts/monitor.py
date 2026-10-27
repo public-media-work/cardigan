@@ -21,10 +21,10 @@ Usage
     python scripts/monitor.py --watch         # live refreshing dashboard (5s)
     python scripts/monitor.py --watch 10      # ... every 10s
     python scripts/monitor.py --json          # machine-readable
-    python scripts/monitor.py --url http://cardigan01:8100   # ad-hoc target(s)
+    python scripts/monitor.py --url http://cardigan02:8100   # ad-hoc target(s)
 
 Instances come from ``config/instances.json`` when present (see that file), otherwise
-from built-in defaults (cardigan01 + localhost). Auth: an ``X-API-Key`` header is sent
+from built-in defaults (prod + localhost). Auth: an ``X-API-Key`` header is sent
 when a key resolves (per-instance ``api_key_env``, else global ``CARDIGAN_API_KEY``);
 authed endpoints degrade gracefully to "auth required" on a 401/403.
 """
@@ -57,7 +57,14 @@ HEARTBEAT_STALE_SECONDS = 120
 MMINGEST_STALL_MINUTES = 45
 
 DEFAULT_INSTANCES = [
-    {"name": "cardigan01", "url": "http://cardigan01:8100", "watcher": False},
+    # The service name, not a host: Caddy serves the SPA and proxies /api/ on
+    # one origin, so there is no :8100 to derive the web URL from.
+    {
+        "name": "prod",
+        "url": "https://cardigan.riechers.co",
+        "web_url": "https://cardigan.riechers.co",
+        "watcher": False,
+    },
     {"name": "dev", "url": "http://localhost:8100", "watcher": True},
 ]
 

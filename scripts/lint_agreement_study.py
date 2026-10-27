@@ -21,7 +21,7 @@ Two halves, deliberately separated:
   unit-tested; exercised by actually running the study.
 
 Usage:
-    python -m scripts.lint_agreement_study [--base-url http://cardigan01:8100]
+    python -m scripts.lint_agreement_study [--base-url https://cardigan.riechers.co]
         [--jobs 1,2,...|all] [--cache-dir OUTPUT/eval/prod_artifacts]
         [--refresh] [--out planning/hybrid-pipeline-eval/stage2-lint-agreement]
 
@@ -46,7 +46,7 @@ from api.services.style_engine.lint import run_lint
 from api.services.style_engine.rules import StyleRulesError, load_rules
 from api.services.style_engine.types import PhaseCheckResult, RuleViolation
 
-DEFAULT_BASE_URL = "http://cardigan01:8100"
+DEFAULT_BASE_URL = "https://cardigan.riechers.co"
 DEFAULT_CACHE_DIR = Path("OUTPUT/eval/prod_artifacts")
 DEFAULT_OUT_DIR = Path("planning/hybrid-pipeline-eval/stage2-lint-agreement")
 DEFAULT_RULES_PATH = Path("config/house_style.yaml")

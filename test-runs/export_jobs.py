@@ -13,7 +13,7 @@ index records transcript_file so they can be pulled from the box or mmingest lat
 Usage:
   python test-runs/export_jobs.py --out ../internal-production-data/cardigan/2026-09-24-all-jobs
   python test-runs/export_jobs.py --status paused failed --out ...
-  CARDIGAN_API_URL=http://cardigan01:8100 (default)
+  CARDIGAN_API_URL=https://cardigan.riechers.co (default)
   CARDIGAN_API_KEY=...  sent as X-API-Key when set
 """
 
@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BASE = os.environ.get("CARDIGAN_API_URL", "http://cardigan01:8100")
+BASE = os.environ.get("CARDIGAN_API_URL", "https://cardigan.riechers.co")
 
 
 def get(url: str) -> tuple[int, str]:

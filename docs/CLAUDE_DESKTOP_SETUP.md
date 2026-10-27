@@ -182,7 +182,7 @@ The MCP server supports these environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EDITORIAL_API_URL` | `http://localhost:8100` | The Metadata Neighborhood API URL. **For production work, set this to the homelab container `http://cardigan01:8100`** (over Tailscale); `localhost` is local dev only. See `CLAUDE.md` › "Deployment Environments". |
+| `EDITORIAL_API_URL` | `http://localhost:8100` | The Metadata Neighborhood API URL. **For production work, set this to `https://cardigan.riechers.co`** (from the home network); `localhost` is local dev only. See `CLAUDE.md` › "Deployment Environments". |
 | `EDITORIAL_OUTPUT_DIR` | `./OUTPUT` | Project output directory |
 | `EDITORIAL_TRANSCRIPTS_DIR` | `./transcripts` | Transcript source directory |
 | `AIRTABLE_API_KEY` | (none) | For SST metadata lookup (READ-ONLY) |
