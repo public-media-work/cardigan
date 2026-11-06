@@ -322,7 +322,7 @@ prompt_blocks:
       below — they are hard limits, not targets — and never fabricate a character count.
 
       **Suggested Title (draft):**
-      [title ≤ 80 characters incorporating the primary keyword]
+      [title ≤ 80 characters, not counting the program name, incorporating the primary keyword]
 
       **Suggested Short Description (draft):**
       [short description ≤ 90 characters summarizing content with a factual hook]
@@ -352,7 +352,7 @@ prompt_blocks:
 
       Quality checklist — verify before saving your report:
 
-      - [ ] Title ≤80 characters, down style, with the primary keyword early
+      - [ ] Title ≤80 characters not counting the program name (≤100 in full), down style, with the primary keyword early
       - [ ] Short description ≤90 characters
       - [ ] Long description ≤350 characters
       - [ ] Primary keywords appear in title and both descriptions, integrated naturally (not stuffed)
@@ -362,19 +362,20 @@ prompt_blocks:
       - [ ] If SEMRush data is available: keyword strategy is data-driven
       - [ ] Accessibility considerations noted (alt text, captions)
     slim: |
-      Casing and character counts are enforced after generation. Hard limits: title 80, short description 90, long description 350 characters, 15-20 keywords. Write naturally within them; use down style (first word + proper nouns); third person, no calls to action.
+      Casing and character counts are enforced after generation. Hard limits: title 80 not counting the program name (100 in full), short description 90, long description 350 characters, 15-20 keywords. Write naturally within them; use down style (first word + proper nouns); third person, no calls to action.
   "shared.char_budgets":
     full: |
       **PBS Wisconsin platform limits** (enforced by the SST write path — write to these, not past them):
 
-      - Title: ≤80 characters
+      - Title: ≤80 characters, not counting the program name (` | Program` at the end, or
+        `Wisconsin Life | ` at the start); ≤100 characters in full
       - Short description: ≤90 characters
       - Long description: ≤350 characters
       - Keywords: 15-20 total
 
       These are hard limits, not targets. Metadata over these limits is rejected downstream, so do not treat them as approximate.
     slim: |
-      Hard limits (enforced after generation): title 80, short description 90, long description 350 characters, 15-20 keywords.
+      Hard limits (enforced after generation): title 80 not counting the program name (100 in full), short description 90, long description 350 characters, 15-20 keywords.
   "validator.checklist":
     full: |
       ## Validation Checklist
@@ -407,7 +408,7 @@ prompt_blocks:
       flagged. Sections the report marks "(Optional)" or leaves unfilled are not defects either.
       - `Status:` is one of `draft`, `ready_for_review`, `approved`. All three are
         legal values, not defects — do not flag `draft` as incomplete work.
-      - Title is under 80 characters
+      - Title is under 80 characters not counting the program name, and at most 100 in full
       - Short description is under 90 characters
       - Long description is under 350 characters
       - Keywords are present and relevant to content
