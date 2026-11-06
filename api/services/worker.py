@@ -1483,7 +1483,9 @@ Extract any name or spelling corrections that should be added to the glossary. S
 
         A unit's failure is that item's state, never the job's: the job ends
         ``completed`` once every item has a state. Only a failure to start —
-        no caption file — fails the job, via ``process_job``'s handler.
+        no transcript file — fails the job, via ``process_job``'s handler. A
+        missing ``.srt`` is not one: the captions slice falls back to the
+        transcript's plain text.
         """
         from api.models.job import JobPhase, JobUpdate, PhaseStatus
         from api.services.database import update_job

@@ -102,7 +102,10 @@ async def _build_slice(
     inputs: Mapping[str, Any],
 ) -> BundlePart:
     settings = gen_settings.resolve(spec, llm_config)
-    write = dict(origin=spec.origin.value, producer=spec.slice)
+    # A rebuild that produces nothing keeps the last good content. Its state
+    # says it isn't ready, so no reader sees it, but the original isn't lost.
+    previous = parts.get(spec.slice)
+    write = dict(origin=spec.origin.value, producer=spec.slice, content=previous.content if previous else None)
 
     blocked = next((name for name in spec.reads if name not in parts or not parts[name].is_ready()), None)
     if blocked is not None:
@@ -124,8 +127,7 @@ async def _build_slice(
                 spec.slice,
                 state=result.state.value,
                 reason=result.reason,
-                content=result.content,
-                **write,
+                **{**write, "content": result.content},
                 **ctx.provenance(),
             )
         except GenerationFailure as failure:

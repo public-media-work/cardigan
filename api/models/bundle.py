@@ -12,7 +12,7 @@ overwrites it — a correction made once reaches every item that reads the slice
 """
 
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,12 +59,14 @@ class BundlePart(BaseModel):
 class BundlePartUpdate(BaseModel):
     """PATCH /jobs/{job_id}/bundle/{slice} — the editor's correction only.
 
-    Send ``edited_content: null`` to clear a correction.
+    Send ``edited_content: null`` to clear a correction. Every slice's content
+    is an object, so a correction must be one too — anything else would reach
+    the generators and fail there with no useful message.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    edited_content: Any = None
+    edited_content: Optional[Dict[str, Any]] = None
 
 
 class Bundle(BaseModel):

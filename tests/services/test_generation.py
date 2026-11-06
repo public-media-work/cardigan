@@ -488,6 +488,17 @@ async def test_a_correction_makes_readers_stale_and_survives_a_rebuild(job, stub
 
 
 @pytest.mark.asyncio
+async def test_a_failed_rebuild_keeps_the_last_good_content(job, stub_sst):
+    await run_job(job.id, llm=FakeLLM(), llm_config={}, inputs=INPUTS)
+    before = await get_bundle_part(job.id, "outline")
+
+    rebuilt = await rebuild_slice(job.id, "outline", llm=FakeLLM({"slice:outline": "not json"}), llm_config={})
+
+    assert rebuilt.state.value == "failed"
+    assert rebuilt.content == before.content
+
+
+@pytest.mark.asyncio
 async def test_re_running_keeps_the_editors_verdict(job, stub_sst):
     from api.models.item import ItemUpdate, ReviewState
     from api.services.database import update_job_item
@@ -539,6 +550,7 @@ async def test_bundle_endpoints(job, stub_sst):
         assert patched.json()["edited_content"] == {"summary": "S"}
 
         assert client.patch(f"/api/jobs/{job.id}/bundle/outline", json={"content": {}}).status_code == 422
+        assert client.patch(f"/api/jobs/{job.id}/bundle/sst", json={"edited_content": "a string"}).status_code == 422
 
         listed = client.get(f"/api/jobs/{job.id}/items").json()
         assert listed["summary"]["stale"] == 1
@@ -547,6 +559,17 @@ async def test_bundle_endpoints(job, stub_sst):
         assert client.post(f"/api/jobs/{job.id}/items/keywords/regenerate").status_code == 409
         assert client.post(f"/api/jobs/{job.id}/bundle/captions/rebuild").status_code == 409
         assert client.post(f"/api/jobs/{job.id}/bundle/nope/rebuild").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_regenerate_needs_a_bundle(job, stub_sst):
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    with TestClient(app) as client:
+        assert client.post(f"/api/jobs/{job.id}/items/title/regenerate").status_code == 409
+        assert client.get(f"/api/jobs/{job.id}/items").json()["items"] == []
 
 
 @pytest.mark.asyncio

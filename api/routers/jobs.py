@@ -1035,6 +1035,8 @@ async def regenerate_job_item(job_id: int, key: str):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     if key not in generation_runner.GENERATORS_BY_ITEM:
         raise HTTPException(status_code=409, detail=f"Item '{key}' has no generator yet")
+    if not await get_bundle_parts(job_id):
+        raise HTTPException(status_code=409, detail=f"Job {job_id} has no bundle; it didn't run on the V5 engine")
     llm = _llm()
     return await generation_runner.regenerate_item(job_id, key, llm=llm, llm_config=llm.config)
 
