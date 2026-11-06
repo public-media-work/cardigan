@@ -90,7 +90,13 @@ for pr in "$@"; do
         echo "PR $pr: merge did not complete within 60 s, stopping" >&2
         exit 1
     fi
-    git push origin --delete "$branch" >/dev/null 2>&1 \
-        || echo "PR $pr: remote branch $branch not deleted (already gone?)"
+    # A fork PR's branch name belongs to the fork; deleting it here could
+    # hit an unrelated branch of the same name on origin.
+    if [ "$(gh pr view "$pr" --json isCrossRepository -q .isCrossRepository)" = "true" ]; then
+        echo "PR $pr: from a fork, leaving its branch alone"
+    else
+        git push origin --delete "$branch" >/dev/null 2>&1 \
+            || echo "PR $pr: remote branch $branch not deleted (already gone?)"
+    fi
     echo "PR $pr: merged at $sha"
 done
