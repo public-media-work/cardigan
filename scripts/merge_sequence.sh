@@ -31,10 +31,20 @@ failed_checks() {
 }
 
 for pr in "$@"; do
-    if [ "$(gh pr view "$pr" --json state -q .state)" = "MERGED" ]; then
-        echo "PR $pr: already merged, skipping"
-        continue
-    fi
+    case "$(gh pr view "$pr" --json state,isDraft -q '.state + (if .isDraft then "/draft" else "" end)')" in
+        MERGED)
+            echo "PR $pr: already merged, skipping"
+            continue
+            ;;
+        CLOSED)
+            echo "PR $pr: closed without merging, stopping" >&2
+            exit 1
+            ;;
+        */draft)
+            echo "PR $pr: still a draft, stopping" >&2
+            exit 1
+            ;;
+    esac
 
     deadline=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
     while :; do
@@ -44,6 +54,10 @@ for pr in "$@"; do
             BEHIND)
                 echo "PR $pr: behind main, updating branch"
                 gh pr update-branch "$pr" >/dev/null
+                # Checks from the old head can still read as failed here;
+                # give the new head's run time to register before checking.
+                sleep "$POLL_SEC"
+                continue
                 ;;
             DIRTY)
                 echo "PR $pr: conflicts with main, stopping" >&2
