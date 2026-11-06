@@ -32,7 +32,7 @@ Cardigan - A database-backed, API-first system for processing video transcripts 
 
 There are two running instances. **For any production/editorial work — reviewing
 real jobs, reading SST metadata, copy-editing live content — agents MUST target
-the homelab-hosted container, not localhost.**
+the production service name, not localhost.**
 
 | Environment | Base URL | Use for |
 |-------------|----------|---------|
@@ -46,7 +46,9 @@ Rules for agents:
   moves; the name doesn't. On the home network it goes through Caddy (OPNsense),
   which serves the dashboard and proxies `/api/`. Off the home network it hits a
   Cloudflare Access login, which scripts can't pass — so agents need to be on
-  the home network (at home, or through a Tailscale exit node there).
+  the home network (at home, or through a Tailscale exit node there). Anywhere
+  else (CI, a cloud runner) prod is unreachable: say so, and never fall back to
+  `localhost` as a stand-in for production data.
   When prod moves, repoint Caddy, the CT 112 tunnel rule and its firewall allow;
   nothing here changes. To debug one host directly: `http://cardigan02:8100`.
 - Honor a caller-supplied `CARDIGAN_API_URL` if set; otherwise the production

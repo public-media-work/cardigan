@@ -20,7 +20,8 @@ final-approval step.
 
 Decisions already made (2026-07-15):
 
-1. POC processes jobs on **production cardigan01**, `YT_` filename prefix.
+1. POC processes jobs on **production** (then cardigan01; now
+   `https://cardigan.riechers.co`), `YT_` filename prefix.
 2. Dashboard write-back uses a **guarded REST endpoint** backed by a shared
    service that MCP tools also use (confirmation-token pattern preserves the
    human-approval guarantee of the propose→review→commit convention).
