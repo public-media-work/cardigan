@@ -117,7 +117,7 @@ def seed(db_path: Path, jobs_json: Path, output_dir: Path) -> int:
 
     print(f"inserted={inserted} skipped={skipped} path_remapped={remapped}")
     print(f"jobs in dev db: {total} ({with_output} with seo_output.md on disk)")
-    print("\nNext: backfill items with  python scripts/backfill_job_items.py --all")
+    print('\nNext: set routing.generation.engine to "items" and requeue a job to run the V5 engine')
     return 0
 
 

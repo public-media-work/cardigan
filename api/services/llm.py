@@ -736,6 +736,15 @@ class LLMClient:
             await self._http_client.aclose()
             self._http_client = None
 
+    def backend_name(self, backend: Optional[str] = None) -> str:
+        """The configured backend a call goes to: the one asked for, or the primary.
+
+        This is the config name (``openrouter``, ``local-llm``), not the API type
+        ``LLMResponse.backend`` reports, which is ``openai`` for every
+        OpenAI-compatible server, local ones included.
+        """
+        return backend or self.config.get("primary_backend", "openrouter")
+
     def get_backend_config(self, backend_name: Optional[str] = None) -> Dict[str, Any]:
         """Get configuration for a specific backend.
 
@@ -745,8 +754,7 @@ class LLMClient:
         Returns:
             Backend configuration dict
         """
-        if backend_name is None:
-            backend_name = self.config.get("primary_backend", "openrouter")
+        backend_name = self.backend_name(backend_name)
 
         backends = self.config.get("backends", {})
         if backend_name not in backends:
@@ -857,7 +865,7 @@ class LLMClient:
         Returns:
             LLMResponse with content, tokens, and cost
         """
-        backend_name = backend or self.config.get("primary_backend", "openrouter")
+        backend_name = self.backend_name(backend)
         backend_config = self.get_backend_config(backend_name)
 
         # Determine model — route on the (backend, model) pair. Priority:

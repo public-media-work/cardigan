@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from api.models.item import CopyMode
+
 
 class JobStatus(str, Enum):
     """Valid job status values (status column is plain Text, no CHECK constraint)."""
@@ -88,6 +90,9 @@ class JobCreate(BaseModel):
     media_file: Optional[str] = Field(None, description="Extracted-audio filename relative to MEDIA_DIR (media jobs)")
     intake: Optional[Dict[str, Any]] = Field(
         None, description="Upload-form intake for media jobs: speakers, context_terms, language"
+    )
+    copy_generation: Optional[CopyMode] = Field(
+        None, description="Override the instance copy mode for this job: off | review | suggest (#427)"
     )
 
 
@@ -190,6 +195,9 @@ class Job(BaseModel):
     job_type: str = Field(default="transcript", description="'transcript' (classic) or 'media' (audio upload)")
     media_file: Optional[str] = Field(None, description="Extracted-audio filename relative to MEDIA_DIR")
     intake: Optional[Dict[str, Any]] = Field(None, description="Upload-form intake for media jobs")
+    copy_generation: Optional[CopyMode] = Field(
+        None, description="Per-job copy mode override; null inherits the instance setting (#427)"
+    )
 
     class Config:
         from_attributes = True

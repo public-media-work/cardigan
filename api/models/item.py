@@ -38,6 +38,37 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 # generation_reason on a ready item whose generator kept the basis as written.
 NO_CHANGE_NEEDED = "no_change_needed"
+# generation_reason on a ready copy item produced under copy_generation=review:
+# the generator could only affirm or flag the basis, never rewrite it (#427).
+REVIEW_ONLY = "review_only"
+
+
+class CopyMode(str, Enum):
+    """How far copy generators may go (#427). Instance setting, with a
+    per-job override.
+
+    off      no model touches copy items; they show the basis and take a
+             hand edit.
+    review   a generator may affirm or flag the basis, never write text.
+             Code enforces it: proposals and alternatives are dropped.
+    suggest  affirm, edit lightly, offer alternatives; first-draft copy
+             when there is no basis.
+    """
+
+    off = "off"
+    review = "review"
+    suggest = "suggest"
+
+    @classmethod
+    def parse(cls, value: Any, default: "CopyMode | None" = None) -> "CopyMode":
+        """Accept a CopyMode, its string, or #426's boolean (True=suggest)."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, bool):
+            return cls.suggest if value else cls.off
+        if isinstance(value, str) and value in cls._value2member_map_:
+            return cls(value)
+        return default if default is not None else cls.suggest
 
 
 class ItemCategory(str, Enum):
@@ -194,7 +225,15 @@ class Item(BaseModel):
     )
 
     generator: Optional[str] = None
-    model: Optional[str] = None
+    model: Optional[str] = Field(None, description="The resolved model id, never an alias")
+    backend: Optional[str] = Field(
+        None, description="The configured backend that served the call, e.g. 'openrouter' or 'local-llm'"
+    )
+    input_revisions: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="What the item was built from: {'slices': {name: revision}, 'items': {key: generated_at}}",
+    )
+    stale: bool = Field(False, description="An input changed after this item was generated; re-run to refresh")
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
@@ -209,9 +248,18 @@ class Item(BaseModel):
         affirmation — the basis it kept."""
         if self.edited_value is not None:
             return self.edited_value
-        if self.is_affirmation():
+        if self.keeps_basis():
             return self.basis_value
         return self.proposed_value
+
+    def keeps_basis(self) -> bool:
+        """True when the item's answer is the existing text: an affirmation,
+        or a review-only pass. An unedited one pushes nothing."""
+        return self.is_affirmation() or (
+            self.generation_state == GenerationState.ready
+            and self.proposed_value is None
+            and self.generation_reason == REVIEW_ONLY
+        )
 
     def is_affirmation(self) -> bool:
         """True when the generator kept the basis as written. A push of an
