@@ -561,8 +561,10 @@ def merge_formatter_chunks(chunks: List[str], header_fields: Optional[Dict[str, 
 # window of trailing previous-chunk turns tested against).
 _MAX_SEAM_ECHO_TURNS = 6
 
-# A speaker turn starts at a line-leading bold label, e.g. ``**Jane Doe:**``.
-_ARROW_NOTES_BLOCK_RE = re.compile(r"<!--\s*REVIEW NOTES\s*-->.*?<!--\s*/REVIEW NOTES\s*-->", re.DOTALL | re.IGNORECASE)
+_ARROW_NOTES_BLOCK_RE = re.compile(
+    r"<!--\s*REVIEW NOTES\s*-->.*?<!--\s*/REVIEW NOTES\s*-->",
+    re.DOTALL | re.IGNORECASE,
+)
 _DOC_META_LINE_RE = re.compile(
     r"^\*\*(?:Project|Program|Duration|Date Processed|Date|Air Date|Media ID|Model|Agent|Creator|Status):\*\*.*$",
     re.MULTILINE,
@@ -581,6 +583,7 @@ def formatter_dialogue(formatted: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+# A speaker turn starts at a line-leading bold label, e.g. ``**Jane Doe:**``.
 _TURN_SPLIT_RE = re.compile(r"(?m)(?=^\*\*[^*\n]+?:\*\*)")
 _TURN_LABEL_RE = re.compile(r"^\*\*[^*\n]+?:\*\*[ \t]*")
 
