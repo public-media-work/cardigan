@@ -1,6 +1,9 @@
 ---
 name: tag-scout
 description: Generate candidate YouTube and Media Manager tags from an SRT or SCC caption file, using cardigan's own SEO agent rules. Use when the user hands over a caption or transcript file and wants keywords or tags without running the full four-phase pipeline. Triggers on "tags for this", "generate tags", "keywords for this episode", "tag scout", "what should I tag this".
+metadata:
+  skill-ops-scope: project
+  skill-ops-owner: public-media-work/cardigan
 ---
 
 # tag-scout

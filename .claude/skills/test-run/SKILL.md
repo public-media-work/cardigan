@@ -1,6 +1,9 @@
 ---
 name: test-run
 description: Use when asked to run a Cardigan job locally with coding agents instead of prod. Triggers include a supervised run, a simulated run, a test run, "run the agent instructions locally", generating metadata from a caption/SRT file without deploying, or checking whether open fix PRs would let a job complete. Also covers a full local worker run (real API + worker against a throwaway DB) when bug-testing a deployment or worker change, and gathering evidence for pipeline bugs from a real transcript.
+metadata:
+  skill-ops-scope: project
+  skill-ops-owner: public-media-work/cardigan
 ---
 
 # Supervised test run
