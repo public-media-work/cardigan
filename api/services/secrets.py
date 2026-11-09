@@ -4,35 +4,51 @@ Centralized secret management for Cardigan.
 Resolution order:
 1. Docker secret file (/run/secrets/<name_lowercase>)
 2. Environment variable
-3. macOS Keychain via keychain_secrets (local dev only)
+3. get-secret.sh on PATH (local dev only)
 
 This module replaces the duplicated keychain-loading boilerplate that was
 previously copy-pasted across main.py, run_worker.py, airtable.py, and
 langfuse_client.py.
 """
 
-import importlib.util
+import logging
+import shutil
+import subprocess
 import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 DOCKER_SECRETS_DIR = Path("/run/secrets")
 
 # ---------------------------------------------------------------------------
 # macOS Keychain loader (local dev only — not available in Docker/CI)
 # ---------------------------------------------------------------------------
-_keychain_get_secret = None
-_keychain_path = Path.home() / "Developer/the-lodge/scripts/keychain_secrets.py"
-if _keychain_path.exists():
+
+
+def _keychain_get_secret(key: str) -> Optional[str]:
+    """Resolve a secret via ``get-secret.sh``, which the environment puts on PATH.
+
+    Local dev only. Docker/CI resolve from /run/secrets or the environment and
+    never reach this, so a missing script is warned about, not raised.
+    """
+    exe = shutil.which("get-secret.sh")
+    if not exe:
+        _log.warning(
+            "get-secret.sh is not on PATH; cannot resolve %s from the secrets "
+            "backend. Install the machine-ops bin dir on PATH or set %s in the "
+            "environment.", key, key,
+        )
+        return None
     try:
-        spec = importlib.util.spec_from_file_location("keychain_secrets", _keychain_path)
-        if spec and spec.loader:
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            _keychain_get_secret = getattr(mod, "get_secret", None)
-    except Exception:
-        pass
+        result = subprocess.run([exe, key], capture_output=True, text=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.rstrip("\n") or None
 
 
 def get_secret(key: str) -> Optional[str]:
@@ -59,10 +75,9 @@ def get_secret(key: str) -> Optional[str]:
         return value
 
     # 3. macOS Keychain
-    if _keychain_get_secret:
-        value = _keychain_get_secret(key)
-        if value:
-            return value
+    value = _keychain_get_secret(key)
+    if value:
+        return value
 
     return None
 

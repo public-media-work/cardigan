@@ -25,11 +25,13 @@ propose/review/commit workflow. See WRITABLE_FIELDS for the allowlist.
 
 import asyncio
 import contextlib
-import importlib.util
 import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -62,24 +64,25 @@ from api.services.style_engine.casing import build_canonical
 # The MCP server runs as a separate process, so it needs its own load_dotenv().
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# Then backfill from Keychain for any keys still missing.
-# keychain_secrets isn't on sys.path, so use spec_from_file_location.
-_keychain_path = Path.home() / "Developer/the-lodge/scripts/keychain_secrets.py"
-if _keychain_path.exists():
-    try:
-        spec = importlib.util.spec_from_file_location("keychain_secrets", _keychain_path)
-        if spec and spec.loader:
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            _get_secret = getattr(mod, "get_secret", None)
-            if _get_secret:
-                for key in ["AIRTABLE_API_KEY"]:
-                    if key not in os.environ:
-                        value = _get_secret(key)
-                        if value:
-                            os.environ[key] = value
-    except Exception:
-        pass  # Keychain module not available (e.g., CI/Docker)
+# Then backfill from get-secret.sh (provided on PATH by the environment).
+if "AIRTABLE_API_KEY" not in os.environ:
+    _get_secret_exe = shutil.which("get-secret.sh")
+    if _get_secret_exe:
+        try:
+            _r = subprocess.run(
+                [_get_secret_exe, "AIRTABLE_API_KEY"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if _r.returncode == 0 and _r.stdout.strip():
+                os.environ["AIRTABLE_API_KEY"] = _r.stdout.rstrip("\n")
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    else:
+        print(
+            "WARNING: get-secret.sh is not on PATH; AIRTABLE_API_KEY not backfilled "
+            "(set it in the environment or put the machine-ops bin dir on PATH).",
+            file=sys.stderr,
+        )
 
 # Configuration
 API_BASE_URL = os.getenv("EDITORIAL_API_URL", "http://localhost:8100")
