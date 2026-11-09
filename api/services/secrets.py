@@ -12,9 +12,9 @@ langfuse_client.py.
 """
 
 import logging
+import os
 import shutil
 import subprocess
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -39,7 +39,9 @@ def _keychain_get_secret(key: str) -> Optional[str]:
         _log.warning(
             "get-secret.sh is not on PATH; cannot resolve %s from the secrets "
             "backend. Install the machine-ops bin dir on PATH or set %s in the "
-            "environment.", key, key,
+            "environment.",
+            key,
+            key,
         )
         return None
     try:

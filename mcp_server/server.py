@@ -71,7 +71,9 @@ if "AIRTABLE_API_KEY" not in os.environ:
         try:
             _r = subprocess.run(
                 [_get_secret_exe, "AIRTABLE_API_KEY"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if _r.returncode == 0 and _r.stdout.strip():
                 os.environ["AIRTABLE_API_KEY"] = _r.stdout.rstrip("\n")
