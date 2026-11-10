@@ -15,7 +15,7 @@ transcript), this script:
    into the run directory — everything the copy-audit report needs alongside
    snippet.json.
 
-Targets production (http://cardigan01:8100) by default per CLAUDE.md; honor
+Targets production (https://cardigan.riechers.co) by default per CLAUDE.md; honor
 CARDIGAN_API_URL / CARDIGAN_API_KEY.
 """
 
@@ -29,7 +29,7 @@ from pathlib import Path
 
 import requests
 
-API_URL = os.environ.get("CARDIGAN_API_URL", "http://cardigan01:8100").rstrip("/")
+API_URL = os.environ.get("CARDIGAN_API_URL", "https://cardigan.riechers.co").rstrip("/")
 API_KEY = os.environ.get("CARDIGAN_API_KEY")
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "paused", "investigating"}
