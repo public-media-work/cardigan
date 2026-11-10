@@ -7,6 +7,7 @@ findings write-up. These are evidence for bug reports, not fixtures for the test
 | Run | What | Start here |
 |---|---|---|
 | `2026-09-24-6POL0213-manual-supervisor/` | Inside Wisconsin Politics 6POL0213 driven through all five phases by a supervisor agent against `origin/main` e142891 (prod's revision), with OpenRouter replays of the formatter on Sonnet 5. Found why prod jobs pause and what unblocks them. | `FINDINGS-6POL0213.md`, then `RUNLOG.md` |
+| `2026-11-06-6GWQ2603-manual-supervisor/` | Great Wisconsin Quilt Show 6GWQ2603 (68 min) through all five phases on `origin/main` 262bdc7 (prod's revision), every phase on Claude Code subagents with no classifier stops. Prod would pause on two validator flags (one a prompt contradiction); timestamps came out as one chapter because `- Name:` speaker labels aren't boundary candidates. Write-up only; prompts and outputs are in the private repo. | `FINDINGS-6GWQ2603.md`, then `RUNLOG.md` |
 
 ## Running a new one
 
