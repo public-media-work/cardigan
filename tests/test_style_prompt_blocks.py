@@ -288,7 +288,10 @@ def test_seo_prompt_full_profile_renders_expected_copy_rules_block() -> None:
 
     assert "## Copy style (REQUIRED)" in rendered
     assert "Down style for titles/headlines" in rendered
-    assert "Title ≤80 characters, down style, with the primary keyword early" in rendered
+    assert (
+        "Title ≤80 characters not counting the program name (≤100 in full), down style, with the primary keyword early"
+        in rendered
+    )
     assert "**PBS Wisconsin platform limits**" in rendered
     assert "Title: ≤80 characters" in rendered
     assert "Short description: ≤90 characters" in rendered
@@ -302,11 +305,12 @@ def test_seo_prompt_slim_profile_renders_condensed_blocks() -> None:
 
     assert (
         "Casing and character counts are enforced after generation. Hard limits: "
-        "title 80, short description 90, long description 350 characters, "
-        "15-20 keywords."
+        "title 80 not counting the program name (100 in full), short description 90, "
+        "long description 350 characters, 15-20 keywords."
     ) in rendered
     assert (
-        "Hard limits (enforced after generation): title 80, short description 90, "
+        "Hard limits (enforced after generation): title 80 not counting the program name "
+        "(100 in full), short description 90, "
         "long description 350 characters, 15-20 keywords."
     ) in rendered
     # Proves slim actually swapped in -- the full-profile-only heading must be absent.

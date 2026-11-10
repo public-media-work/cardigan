@@ -100,7 +100,7 @@ This mode runs the real API and worker against a throwaway database, so the job 
 
 1. **Code.** `harness.py code --dest <cohort>/_code-main`, with `--prs` for a stack, as in step 1 above. The tree has no venv, so use the main checkout's.
 2. **Unit.** Make `<cohort>/<label>-full/transcripts/` and copy or download the SRT into it.
-   - If the job already exists on prod, its exact transcript is on the host: `scp cardigan01:<transcripts dir>/archive/<file>.srt`. The prod path changes with the deploy (Docker volume vs. native state dir), so look it up, don't assume it.
+   - If the job already exists on prod, its exact transcript is on the prod host (cardigan02 since the 2026-10-26 cutover): `scp root@cardigan02.riechers.co:<transcripts dir>/archive/<file>.srt`. The native state dir is under `/var/lib/cardigan`; check `TRANSCRIPTS_DIR` in `/etc/cardigan/cardigan.env` rather than assuming it.
    - The API serves only outputs, not the source file.
 3. **API.** Use `run_in_background`, all paths absolute, and no variables:
    `DATABASE_PATH=<unit>/run.db OUTPUT_DIR=<unit>/OUTPUT TRANSCRIPTS_DIR=<unit>/transcripts <main checkout>/venv/bin/uvicorn api.main:app --port 8199 --app-dir <code tree>`

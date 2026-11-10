@@ -13,7 +13,10 @@ WorkingDirectory=/opt/cardigan
 EnvironmentFile=/etc/cardigan/cardigan.env
 EnvironmentFile=-/etc/cardigan/secrets.env
 ExecStart=/opt/cardigan-venv/bin/python run_worker.py
-Restart=on-failure
+# always, not on-failure: Settings' "Restart Components" makes the process
+# exit cleanly (SIGTERM / self-exit) and relies on the supervisor to bring it
+# back, as Docker's unless-stopped did. systemctl stop still stops it.
+Restart=always
 RestartSec=10
 # Give an in-flight phase time to wind down on restart.
 TimeoutStopSec=60

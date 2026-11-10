@@ -19,6 +19,40 @@ export interface ModelGroup {
   models: RosterModel[]
 }
 
+/**
+ * A "latest in family" choice: an OpenRouter alias such as
+ * `~anthropic/claude-sonnet-latest`, plus the concrete model it points at now
+ * (`resolves_to`, null when the catalog can't say). Picking one makes a phase
+ * follow new releases of that family (#499).
+ */
+export interface ModelAliasOption {
+  id: string
+  name: string
+  family: string
+  resolves_to?: string | null
+}
+
+export function isModelAlias(modelId: string | null | undefined): boolean {
+  return !!modelId && modelId.startsWith('~')
+}
+
+/** "Claude Sonnet" for the sonnet alias. */
+export function familyLabel(alias: ModelAliasOption): string {
+  return `Claude ${alias.family.charAt(0).toUpperCase()}${alias.family.slice(1)}`
+}
+
+/** Display name for the model an alias currently runs on, or null if unknown. */
+export function resolvedModelName(alias: ModelAliasOption, models: RosterModel[]): string | null {
+  if (!alias.resolves_to) return null
+  return models.find((m) => m.id === alias.resolves_to)?.name ?? alias.resolves_to
+}
+
+/** Dropdown label, e.g. "Latest Claude Sonnet (now Claude Sonnet 5.5)". */
+export function aliasOptionLabel(alias: ModelAliasOption, models: RosterModel[]): string {
+  const now = resolvedModelName(alias, models)
+  return now ? `${alias.name} (now ${now})` : alias.name
+}
+
 export function groupAvailableModels(models: RosterModel[]): ModelGroup[] {
   const byName = (a: RosterModel, b: RosterModel) => a.name.localeCompare(b.name)
 
