@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from api.services.style_engine.rules import StyleRules
+from api.services.style_engine.titles import split_title
 from api.services.style_engine.types import RuleViolation
 
 
@@ -29,7 +30,10 @@ def check_field_limits(
     - String value with a ``"max"`` limit: ``len(value) > max`` ->
       severity ``"error"``, ``rule_id="limits.<field>.max"``, message
       names both the actual length and the limit. ``model_fixable=True``.
-      The value is NEVER modified -- detection only.
+      The value is NEVER modified -- detection only. A ``title`` is
+      measured without its program name (#459).
+    - ``title`` with a ``"full_max"`` limit: the whole string, program name
+      included, over ``full_max`` -> ``rule_id="limits.title.full_max"``.
     - List value with a ``"count"`` limit: length outside
       ``[min, max]`` -> severity ``"warning"``,
       ``rule_id="limits.<field>.count"``.
@@ -48,17 +52,28 @@ def check_field_limits(
             continue
 
         if isinstance(value, str):
+            measured, program = split_title(value) if field_name == "title" else (value, None)
             max_len = limit.get("max")
-            if max_len is None:
-                continue
-            length = len(value)
-            if length > max_len:
+            if max_len is not None and len(measured) > max_len:
+                what = " excluding the program name" if program else ""
                 violations.append(
                     RuleViolation(
                         rule_id=f"limits.{field_name}.max",
                         phase=phase,
                         severity="error",
-                        message=f"{field_name} is {length} chars (limit {max_len})",
+                        message=f"{field_name} is {len(measured)} chars{what} (limit {max_len})",
+                        field=field_name,
+                        model_fixable=True,
+                    )
+                )
+            full_max = limit.get("full_max") if field_name == "title" else None
+            if full_max is not None and len(value) > full_max:
+                violations.append(
+                    RuleViolation(
+                        rule_id=f"limits.{field_name}.full_max",
+                        phase=phase,
+                        severity="error",
+                        message=f"{field_name} is {len(value)} chars in full (limit {full_max})",
                         field=field_name,
                         model_fixable=True,
                     )
