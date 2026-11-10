@@ -1,0 +1,50 @@
+# Cardigan web dashboard — native-deploy port of /nginx.conf (#470).
+# Rendered by cardigan-deploy with envsubst '${CARDIGAN_API_KEY}' into
+# /etc/nginx/sites-available/cardigan. Differences from the Docker image:
+#   - upstream is 127.0.0.1:8100 (no compose DNS name, no 127.0.0.11 resolver)
+#   - no /mcp/ route (HTTP MCP not deployed here, #474)
+#   - no :3001 remote-preview vhost
+#   - static files from /var/www/cardigan (copied from web/dist per deploy)
+
+server {
+    listen 3100;
+    listen [::]:3100;
+    server_name _;
+
+    # Matches the API's 50MB transcript limit; /api/ overrides for media uploads.
+    client_max_body_size 50m;
+
+    root /var/www/cardigan;
+    index index.html;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml;
+
+    location /api/ws/ {
+        proxy_pass http://127.0.0.1:8100;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-API-Key "${CARDIGAN_API_KEY}";
+        proxy_read_timeout 86400;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-API-Key "${CARDIGAN_API_KEY}";
+        # Media uploads can be large; the API enforces MEDIA_MAX_UPLOAD_BYTES.
+        client_max_body_size 3g;
+        proxy_read_timeout 300;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

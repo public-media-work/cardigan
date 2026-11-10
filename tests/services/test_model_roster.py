@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -134,3 +135,142 @@ async def test_newest_in_family_picks_newest_excludes_variants():
 async def test_newest_in_family_none_on_fetch_failure():
     with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
         assert await model_roster.newest_in_family("opus", ["fast"]) is None
+
+
+@pytest.mark.asyncio
+async def test_newest_in_family_skips_batch_twin():
+    """Every model has a ``:batch`` twin with the same ``created`` stamp (#465)."""
+    raw = [
+        {"id": "anthropic/claude-sonnet-5.5:batch", "created": 300},
+        {"id": "anthropic/claude-sonnet-5.5", "created": 300},
+        {"id": "anthropic/claude-sonnet-4.6", "created": 200},
+    ]
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=raw)):
+        assert await model_roster.newest_in_family("sonnet", ["fast", "fable"]) == "anthropic/claude-sonnet-5.5"
+
+
+CATALOG = [
+    {
+        "id": "anthropic/claude-sonnet-5.5",
+        "reasoning": {"mandatory": True, "supported_efforts": ["max", "xhigh", "high", "medium", "low"]},
+    },
+    {
+        "id": "anthropic/claude-sonnet-4.6",
+        "reasoning": {"mandatory": False, "supported_efforts": ["max", "high", "medium", "low", "none"]},
+    },
+    {"id": "anthropic/claude-haiku-4.5"},
+]
+
+
+@pytest.fixture
+def fresh_catalog_cache():
+    model_roster.invalidate_cache()
+    yield
+    model_roster.invalidate_cache()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_caps_reads_catalog(fresh_catalog_cache):
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=CATALOG)):
+        caps = await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5")
+        assert caps["mandatory"] is True
+        assert await model_roster.reasoning_caps("anthropic/claude-haiku-4.5") == {}
+        assert await model_roster.reasoning_caps("anthropic/not-listed") is None
+        assert await model_roster.reasoning_caps(None) is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_is_cached_and_survives_a_failed_refresh(fresh_catalog_cache):
+    fetch = AsyncMock(return_value=CATALOG)
+    with patch.object(model_roster, "fetch_openrouter_models", fetch):
+        await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5")
+        await model_roster.reasoning_caps("anthropic/claude-sonnet-4.6")
+    assert fetch.await_count == 1
+
+    model_roster._catalog_cache["expires"] = 0.0  # force a refresh, which fails
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
+        caps = await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5")
+    assert caps["mandatory"] is True
+
+
+@pytest.mark.asyncio
+async def test_catalog_pricing_reads_per_token_prices_as_per_million(fresh_catalog_cache):
+    catalog = [
+        {"id": "anthropic/claude-haiku-5.5", "pricing": {"prompt": "0.0000001", "completion": "0.0000005"}},
+        {"id": "anthropic/claude-broken", "pricing": {"prompt": "n/a"}},
+        {"id": "anthropic/claude-unpriced"},
+    ]
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=catalog)):
+        price = await model_roster.catalog_pricing("anthropic/claude-haiku-5.5")
+        assert price == {"input": pytest.approx(0.1), "output": pytest.approx(0.5)}
+        assert await model_roster.catalog_pricing("anthropic/claude-broken") is None
+        assert await model_roster.catalog_pricing("anthropic/claude-unpriced") is None
+        assert await model_roster.catalog_pricing("anthropic/not-listed") is None
+        assert await model_roster.catalog_pricing(None) is None
+
+
+@pytest.mark.asyncio
+async def test_reasoning_caps_none_without_catalog(fresh_catalog_cache):
+    with patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)):
+        assert await model_roster.reasoning_caps("anthropic/claude-sonnet-5.5") is None
+
+
+ALIAS_CATALOG = [
+    {
+        "id": "~anthropic/claude-sonnet-latest",
+        "alias_target": {"name": "Anthropic: Claude Sonnet 5.5", "slug": "anthropic/claude-sonnet-5.5"},
+    },
+    {"id": "anthropic/claude-sonnet-5.5"},
+]
+
+
+def test_alias_helpers():
+    assert model_roster.is_model_alias("~anthropic/claude-sonnet-latest")
+    assert not model_roster.is_model_alias("anthropic/claude-sonnet-4.6")
+    assert not model_roster.is_model_alias(None)
+    assert model_roster.family_alias("Opus") == "~anthropic/claude-opus-latest"
+
+
+@pytest.mark.asyncio
+async def test_resolve_alias_reads_alias_target_and_remembers_it(fresh_catalog_cache):
+    persisted = AsyncMock()
+    with (
+        patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=ALIAS_CATALOG)),
+        patch("api.services.database.set_config", persisted),
+    ):
+        assert await model_roster.resolve_alias("~anthropic/claude-sonnet-latest") == "anthropic/claude-sonnet-5.5"
+        await model_roster.resolve_alias("~anthropic/claude-sonnet-latest")
+    # Persisted once; an unchanged resolution doesn't rewrite the config row.
+    persisted.assert_awaited_once()
+    assert persisted.await_args.args[:2] == (
+        "model_alias.~anthropic/claude-sonnet-latest",
+        "anthropic/claude-sonnet-5.5",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_alias_falls_back_to_last_good_resolution(fresh_catalog_cache):
+    """Catalog down: yesterday's model beats no model."""
+    stored = SimpleNamespace(value="anthropic/claude-sonnet-5.5")
+    with (
+        patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)),
+        patch("api.services.database.get_config", AsyncMock(return_value=stored)),
+    ):
+        assert await model_roster.resolve_alias("~anthropic/claude-sonnet-latest") == "anthropic/claude-sonnet-5.5"
+
+
+@pytest.mark.asyncio
+async def test_resolve_alias_none_when_never_resolved(fresh_catalog_cache):
+    with (
+        patch.object(model_roster, "fetch_openrouter_models", AsyncMock(return_value=None)),
+        patch("api.services.database.get_config", AsyncMock(return_value=None)),
+    ):
+        assert await model_roster.resolve_alias("~anthropic/claude-sonnet-latest") is None
+
+
+def test_lowest_reasoning_effort_skips_none():
+    assert model_roster.lowest_reasoning_effort(CATALOG[0]["reasoning"]) == "low"
+    assert model_roster.lowest_reasoning_effort(CATALOG[1]["reasoning"]) == "low"
+    assert model_roster.lowest_reasoning_effort({"supported_efforts": ["high", "minimal"]}) == "minimal"
+    assert model_roster.lowest_reasoning_effort({}) is None
+    assert model_roster.lowest_reasoning_effort(None) is None

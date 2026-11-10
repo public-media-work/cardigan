@@ -1,5 +1,15 @@
 # Homelab deploy
 
+> **Status, 2026-10-19: prod is still frozen, and this Docker path is being replaced.**
+> CT 103 still runs the 2026-07-20 images. The org-namespace push in
+> `deploy.yml` fails with `denied: permission_denied: read_package`, because
+> the org packages aren't linked to the repo with write access (#352). So the
+> timer described below has had nothing new to pull since the repoint.
+> Production is moving to a **native systemd deployment on cardigan02**
+> (ADR [0001](adr/0001-run-v4-natively-in-lxc.md), #470,
+> [`deploy/native/README.md`](../deploy/native/README.md)). Until that cutover,
+> this page describes CT 103 as it is; afterwards it's history.
+
 How `main` reaches the homelab LXC (`cardigan01`, `cardigan.riechers.co`).
 
 `deploy.yml` builds and pushes
@@ -21,7 +31,7 @@ the modern Docker Engine API.
 > setup instructions for a mechanism that is not in use — not as a description
 > of how deploys happen today.
 
-### Production was frozen from 2026-07-20 to 2026-09-25
+### Production has been frozen since 2026-07-20
 
 Worth knowing before trusting anything here. `deploy.yml` authenticated with
 `secrets.GITHUB_TOKEN` (scoped to **public-media-work**) while pushing to

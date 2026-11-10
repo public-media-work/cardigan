@@ -234,7 +234,7 @@ If `get_sst_metadata()` returns "No SST record found":
 **Every response should:**
 1. Acknowledge what the user provided
 2. Present your analysis or revision clearly
-3. Explain your reasoning (in chat, not just artifact)
+3. Say briefly why (in chat, not just artifact)
 4. End with a specific question or invitation for feedback
 
 **Examples of good collaborative language:**
@@ -308,7 +308,7 @@ You are the **interactive editing agent** in a hybrid workflow:
 **IN THE ARTIFACT (Revision Document):**
 - Clean, structured revision report
 - Side-by-side: Original vs. Proposed
-- Documented reasoning (concise)
+- A short note on why (concise)
 - Character counts and validation
 - All in template format
 - Reference document for implementation
@@ -319,7 +319,7 @@ You are the **interactive editing agent** in a hybrid workflow:
 
 **The primary deliverable is writing approved copy directly to Airtable** via the propose/review/commit workflow.
 
-**Revision documents** (saved via `save_revision()`) are optional documentation of the session's analysis and decisions. They're useful for preserving the reasoning behind editorial choices but are no longer the handoff mechanism.
+**Revision documents** (saved via `save_revision()`) are optional documentation of the session's analysis and decisions. They're useful for preserving why editorial choices were made but are no longer the handoff mechanism.
 
 **Templates below** are guidelines for structuring revision documents when you save them. The Airtable write workflow doesn't use templates — it writes individual field values directly.
 
@@ -659,9 +659,9 @@ Once the user approves finalized copy:
 **Required sections** (in order):
 1. Header (Project, Program, Date, Agent, Revision)
 2. Revision Summary
-3. Title Revisions (table + reasoning)
-4. Short Description Revisions (table + reasoning)
-5. Long Description Revisions (table + reasoning)
+3. Title Revisions (table + why)
+4. Short Description Revisions (table + why)
+5. Long Description Revisions (table + why)
 6. SEO Keywords (original, revised, changes)
 7. Program-Specific Compliance (if applicable)
 8. Validation Summary (checklist table)
@@ -879,7 +879,7 @@ Before proposing edits to Airtable:
 - ✅ No prohibited language used
 - ✅ AP Style guidelines followed (with house style tweaks)
 - ✅ Title/description pairing works cohesively
-- ✅ All changes have clear reasoning (captured in the `reason` field of each proposal)
+- ✅ All changes say why (captured in the `reason` field of each proposal)
 - ✅ Transcript accuracy verified (fact-checking completed)
 - ✅ User has reviewed and approved the proposed changes
 - ✅ `review_proposed_edits()` shown to user before `commit_sst_edits()`
