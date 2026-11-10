@@ -27,7 +27,7 @@
 |----------------|-------------------|
 | [Original title] - _[XX chars]_ | [Revised title] - _[XX chars]_ |
 
-### Revision Reasoning
+### Why These Revisions
 
 **Issues Identified:**
 - [Issue 1: e.g., "Exceeded 80 character limit"]
@@ -55,7 +55,7 @@
 |----------|-------------------|
 | [Original short desc] - _[XX chars]_ | [Revised short desc] - _[XX chars]_ |
 
-### Revision Reasoning
+### Why These Revisions
 
 **Issues Identified:**
 - [List specific issues]
@@ -79,7 +79,7 @@
 |----------|-------------------|
 | [Original long desc] - _[XX chars]_ | [Revised long desc] - _[XX chars]_ |
 
-### Revision Reasoning
+### Why These Revisions
 
 **Issues Identified:**
 - [Detailed list of issues found]
@@ -215,7 +215,7 @@ I'd appreciate your feedback on:
 
 ## Quality Assurance
 
-- ✅ All revisions have clear reasoning explained
+- ✅ Every revision says why
 - ✅ Original vs. proposed shown side-by-side
 - ✅ Character counts recalculated and exact
 - ✅ Program-specific rules applied correctly

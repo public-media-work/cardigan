@@ -48,15 +48,15 @@ class TestCredentialLoading:
 
     @patch.dict("os.environ", {}, clear=True)
     def test_returns_none_when_keychain_unavailable(self):
-        """When Keychain module isn't loaded, return None for missing env var."""
-        with patch("api.services.secrets._keychain_get_secret", None):
+        """When get-secret.sh is absent from PATH, warn and return None."""
+        with patch("api.services.secrets.shutil.which", return_value=None):
             result = get_secret("LANGFUSE_PUBLIC_KEY")
         assert result is None
 
     @patch.dict("os.environ", {"MY_KEY": "env-val"}, clear=False)
     def test_env_value_returned_when_keychain_unavailable(self):
-        """Env var returned even when Keychain module isn't loaded."""
-        with patch("api.services.secrets._keychain_get_secret", None):
+        """Env var returned even when get-secret.sh is absent from PATH."""
+        with patch("api.services.secrets.shutil.which", return_value=None):
             result = get_secret("MY_KEY")
         assert result == "env-val"
 

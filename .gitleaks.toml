@@ -1,0 +1,17 @@
+# Extends gitleaks' built-in ruleset. Picked up automatically from the repo
+# root by the Floor workflow's `gitleaks git .` — no workflow input needed.
+
+[extend]
+useDefault = true
+
+# The built-in airtable-api-key rule matches any 17-character token near the
+# word "airtable", which flags Airtable object IDs (bases, tables, fields,
+# records, views, pages...). Those are identifiers, not credentials — they are
+# documented in CLAUDE.md and docs/AIRTABLE_CHEATSHEET.md. Real secrets keep
+# matching: legacy API keys start with "key", and personal access tokens
+# ("pat...") are longer than 17 characters.
+[[allowlists]]
+description = "Airtable object IDs are not secrets"
+targetRules = ["airtable-api-key"]
+regexTarget = "secret"
+regexes = ['''^(?:app|tbl|fld|rec|viw|sel|pag|usr|wsp|ent|frm)[A-Za-z0-9]{14}$''']

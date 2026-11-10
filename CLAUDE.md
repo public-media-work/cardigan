@@ -32,25 +32,32 @@ Cardigan - A database-backed, API-first system for processing video transcripts 
 
 There are two running instances. **For any production/editorial work — reviewing
 real jobs, reading SST metadata, copy-editing live content — agents MUST target
-the homelab-hosted container, not localhost.**
+the production service name, not localhost.**
 
 | Environment | Base URL | Use for |
 |-------------|----------|---------|
-| **Production (default)** | `http://cardigan01:8100` | All real editorial/production work. Reach over Tailscale (MagicDNS name `cardigan01`, CTID 103) or LAN. |
+| **Production (default)** | `https://cardigan.riechers.co` | All real editorial/production work. A service name, not a host: today it serves cardigan02 (CT 108). |
 | Local dev | `http://localhost:8100` | Only when actively developing/testing the API locally. Never for production data. |
 
 Rules for agents:
-- **Default to `http://cardigan01:8100`.** Only use `localhost` when the user is
+- **Default to `https://cardigan.riechers.co`.** Only use `localhost` when the user is
   explicitly doing local development.
-- **Target the name `cardigan01`, never a hard-coded tailnet IP** — tailnet IPs
-  drift (it has already changed once). LAN fallback if MagicDNS is down:
-  `192.168.1.42:8100`.
+- **Use the service name, never a host name or IP.** Hosts change when prod
+  moves; the name doesn't. On the home network it goes through Caddy (OPNsense),
+  which serves the dashboard and proxies `/api/`. Off the home network it hits a
+  Cloudflare Access login, which scripts can't pass — so agents need to be on
+  the home network (at home, or through a Tailscale exit node there). Anywhere
+  else (CI, a cloud runner) prod is unreachable: say so, and never fall back to
+  `localhost` as a stand-in for production data.
+  When prod moves, repoint Caddy, the CT 112 tunnel rule and its firewall allow;
+  nothing here changes. To debug one host directly: `http://cardigan02:8100`.
 - Honor a caller-supplied `CARDIGAN_API_URL` if set; otherwise the production
   default applies.
 - **Auth:** when `CARDIGAN_API_KEY` is set on the deployment, send it as an
   `X-API-Key` header (exempt paths: `/`, `/api/system/health`, `/docs`,
-  `/openapi.json`, `/api/ws/*`). The homelab box is currently unauthenticated +
-  tailnet/LAN-only; read the key from the environment, never hard-code it.
+  `/openapi.json`, `/api/ws/*`). The app itself is currently unauthenticated
+  (Cloudflare Access is the only gate from outside); read the key from the
+  environment, never hard-code it.
 - The REST API is **read-only for SST** — there is no Airtable-write endpoint.
   SST writes (`propose → review → commit`) exist only via the MCP server.
 
@@ -79,7 +86,7 @@ cd web && npm run dev
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock   # pinned; compiled from requirements.txt + requirements-dev.txt
 ```
 
 ## Architecture
@@ -172,7 +179,7 @@ Design docs live next to the code they describe, or in the epic that owns the wo
 
 - `docs/SYSTEM_RESTART_DESIGN.md` — system-components restart design (shipped)
 - `standalone-agents/youtube-copy-audit/FEATURE.md` — YouTube metadata POC scope
-- `docs/adr/` — architecture decision records (created lazily; none written yet)
+- `docs/adr/` — architecture decision records (created lazily). `0001` — run V4 natively in an LXC (#470)
 - Epic scope lives in the epic issue (e.g. Epic L `#233`, Epic M `#234`,
   Epic K `#232` for v5 hosting)
 
@@ -268,7 +275,8 @@ being migrated off. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. **Neither exists
-yet** — both are created lazily, when there is something worth recording. Don't go
-looking for them; write the first one when you have the first decision.
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, both created
+lazily, when there is something worth recording. `docs/adr/` has its first
+record (`0001`, native V4 deploy); `CONTEXT.md` does not exist yet — write it
+when you have the first domain term worth pinning down.
 See `docs/agents/domain.md`.
