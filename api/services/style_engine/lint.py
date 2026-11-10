@@ -81,6 +81,7 @@ _YOUTUBE_TAGS_RE = re.compile(r"###\s*YouTube Tags.*?```[ \t]*\n(.*?)\n```", re.
 # StyleRules.limits_for(), so this mapping is the only seo-limits logic here.
 _LIMIT_RULE_ID_MAP = {
     "limits.title.max": "lint.seo.title_over_limit",
+    "limits.title.full_max": "lint.seo.title_over_full_limit",
     "limits.short_description.max": "lint.seo.short_over_limit",
     "limits.long_description.max": "lint.seo.long_over_limit",
     "limits.keywords.count": "lint.seo.keywords_count",
