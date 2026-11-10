@@ -73,6 +73,152 @@ async def fetch_openrouter_models() -> Optional[List[dict]]:
         return None
 
 
+# Raw catalog cache for per-model capability lookups (reasoning). Kept apart from
+# the classified-roster cache above: that one holds only family-matched models.
+_catalog_cache: Dict[str, Any] = {"data": None, "expires": 0.0}
+
+# OpenRouter reasoning efforts, weakest first. "none" is not here on purpose: it
+# is the off switch, which mandatory-reasoning models don't offer (#465).
+REASONING_EFFORT_ORDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+async def get_catalog() -> Optional[List[dict]]:
+    """The raw OpenRouter catalog, cached for CACHE_TTL_SECONDS.
+
+    A failed refresh returns the last good copy -- a stale capability answer
+    beats none -- so this is None only if no fetch has ever succeeded.
+    """
+    now = time.time()
+    if _catalog_cache["data"] is not None and now < _catalog_cache["expires"]:
+        return _catalog_cache["data"]
+    raw = await fetch_openrouter_models()
+    if raw:
+        _catalog_cache["data"] = raw
+        _catalog_cache["expires"] = now + CACHE_TTL_SECONDS
+        return raw
+    return _catalog_cache["data"]
+
+
+async def reasoning_caps(model_id: Optional[str]) -> Optional[dict]:
+    """The catalog's ``reasoning`` block for ``model_id``, e.g.
+    ``{"mandatory": True, "supported_efforts": ["max", ..., "low"]}``.
+
+    ``{}`` when the model is listed without one; None when the model or the
+    catalog is unknown -- callers then keep their default behaviour.
+    """
+    if not model_id:
+        return None
+    raw = await get_catalog()
+    if not raw:
+        return None
+    for m in raw:
+        if m.get("id") == model_id:
+            return m.get("reasoning") or {}
+    return None
+
+
+async def catalog_pricing(model_id: Optional[str]) -> Optional[Dict[str, float]]:
+    """``{"input": $/M, "output": $/M}`` for ``model_id`` from the live catalog.
+
+    None when the model, the catalog or its pricing is unknown. Lets the cost
+    guard price models newer than llm.MODEL_PRICING, which is every model a
+    "latest" alias resolves to.
+    """
+    if not model_id:
+        return None
+    raw = await get_catalog()
+    for m in raw or []:
+        if m.get("id") != model_id:
+            continue
+        pricing = m.get("pricing") or {}
+        try:
+            return {
+                "input": float(pricing["prompt"]) * 1_000_000,
+                "output": float(pricing["completion"]) * 1_000_000,
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+# OpenRouter's moving aliases start with "~", e.g. "~anthropic/claude-sonnet-latest";
+# the catalog lists each with an ``alias_target`` naming the concrete model (#499).
+MODEL_ALIAS_PREFIX = "~"
+# Last good alias resolutions persist in the DB config table under this prefix,
+# so a catalog outage resolves to yesterday's model, not to nothing.
+ALIAS_CONFIG_PREFIX = "model_alias."
+_alias_memory: Dict[str, str] = {}
+
+
+def is_model_alias(model_id: Optional[str]) -> bool:
+    return bool(model_id) and model_id.startswith(MODEL_ALIAS_PREFIX)
+
+
+def family_alias(family: str) -> str:
+    """The OpenRouter "latest" alias for an Anthropic family name."""
+    return f"{MODEL_ALIAS_PREFIX}anthropic/claude-{family.lower()}-latest"
+
+
+def _alias_target(raw: Optional[List[dict]], alias: str) -> Optional[str]:
+    for m in raw or []:
+        if m.get("id") == alias:
+            target = m.get("alias_target")
+            slug = target.get("slug") if isinstance(target, dict) else target
+            return slug or None
+    return None
+
+
+async def _remember_alias(alias: str, target: str) -> None:
+    if _alias_memory.get(alias) == target:
+        return
+    _alias_memory[alias] = target
+    try:
+        from api.services.database import set_config
+
+        await set_config(ALIAS_CONFIG_PREFIX + alias, target, description="Last good resolution of a model alias")
+    except Exception as e:  # no DB in this process (tests, scripts): memory still holds it
+        logger.debug("Could not persist alias %s -> %s: %s", alias, target, e)
+
+
+async def _last_good_alias(alias: str) -> Optional[str]:
+    if alias in _alias_memory:
+        return _alias_memory[alias]
+    try:
+        from api.services.database import get_config
+
+        item = await get_config(ALIAS_CONFIG_PREFIX + alias)
+    except Exception as e:
+        logger.debug("Could not read last resolution of %s: %s", alias, e)
+        return None
+    return item.value if item and item.value else None
+
+
+async def resolve_alias(alias: str) -> Optional[str]:
+    """The concrete model id an OpenRouter alias points at now.
+
+    Reads the catalog's ``alias_target``; if the catalog is unavailable or no
+    longer lists the alias, returns the last good resolution. None only if the
+    alias has never resolved -- callers then use the backend's fallback model.
+    """
+    target = _alias_target(await get_catalog(), alias)
+    if target:
+        await _remember_alias(alias, target)
+        return target
+    last = await _last_good_alias(alias)
+    if last:
+        logger.warning("Catalog could not resolve %s; using last good resolution %s", alias, last)
+    return last
+
+
+def lowest_reasoning_effort(caps: Optional[dict]) -> Optional[str]:
+    """Weakest effort the model supports, or None if it lists none we know."""
+    efforts = (caps or {}).get("supported_efforts") or []
+    for effort in REASONING_EFFORT_ORDER:
+        if effort in efforts:
+            return effort
+    return None
+
+
 def _classify_models(raw_models: List[dict], families: List[dict]) -> List[dict]:
     """Filter and classify raw OpenRouter models using family patterns.
 
@@ -268,11 +414,16 @@ def invalidate_cache() -> None:
     """Clear the model roster cache, forcing a refresh on next call."""
     _cache["models"] = None
     _cache["expires"] = 0.0
+    _catalog_cache["data"] = None
+    _catalog_cache["expires"] = 0.0
+    _alias_memory.clear()
 
 
 async def newest_in_family(family: str, exclude_variants: list) -> Optional[str]:
     """Newest anthropic/* model id in `family` by OpenRouter `created`, excluding
-    any id containing an excluded variant token (e.g. 'fast', 'fable').
+    any id containing an excluded variant token (e.g. 'fast', 'fable') and any
+    ``:``-suffixed variant. Every model has a ``:batch`` twin with the same
+    ``created`` stamp, so without that a tie could resolve to the batch endpoint.
 
     Returns None on fetch failure or no match — callers fall through to
     pause-and-suggest rather than guessing.
@@ -284,7 +435,7 @@ async def newest_in_family(family: str, exclude_variants: list) -> Optional[str]
     candidates = []
     for m in raw:
         mid = (m.get("id") or "").lower()
-        if not mid.startswith("anthropic/") or family not in mid:
+        if not mid.startswith("anthropic/") or family not in mid or ":" in mid:
             continue
         if any(v.lower() in mid for v in exclude_variants):
             continue

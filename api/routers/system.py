@@ -7,7 +7,8 @@ Provides status and a single "Restart Components" action:
 
 Restart uses "Option B": a single ``restart_requested_at`` timestamp in the
 config KV table; each component compares it to its own process start time and
-self-exits, and Docker's ``restart: unless-stopped`` policy brings it back. No
+self-exits, and the supervisor brings it back: Docker's ``restart:
+unless-stopped``, or ``Restart=always`` in the native systemd units. No
 Docker socket. See docs/SYSTEM_RESTART_DESIGN.md.
 """
 
@@ -43,8 +44,9 @@ class ComponentStatus(BaseModel):
     # Seconds since the component's last DB heartbeat (None for API, which is
     # detected by port, or if the component has never heartbeated).
     heartbeat_age_seconds: Optional[float] = None
-    # Docker container name for this component, or None if not containerized
-    # (the transcript watcher has no container in the current compose).
+    # Service name for this component: the systemd unit natively, the container
+    # name under Docker (they match). None for the transcript watcher, which
+    # has no service of its own. The field keeps its name for API compatibility.
     container: Optional[str] = None
 
 
@@ -180,7 +182,8 @@ async def _self_restart(delay: float = 1.0) -> None:
     """Terminate this API process after the response has flushed.
 
     uvicorn handles SIGTERM as a graceful shutdown; ``restart: unless-stopped``
-    brings the container back. The delay lets the HTTP response reach the client.
+    (Docker) or ``Restart=always`` (native systemd) brings the process back.
+    The delay lets the HTTP response reach the client.
     """
     await asyncio.sleep(delay)
     os.kill(os.getpid(), signal.SIGTERM)
