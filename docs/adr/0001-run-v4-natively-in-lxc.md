@@ -59,7 +59,7 @@ GitHub Actions is no longer on the deploy path, so a billing lock or a registry 
 - System packages (ffmpeg, nginx, Node) now follow Debian's versions rather than an image's.
 - With a bind mount in place, `pct snapshot` stops working for the CT. Schema rollback means restoring a ZFS snapshot, because migrations only go forward.
 - Rolling back after cutover loses jobs that ran on cardigan02 since then. That's accepted.
-- After cutover the box's hostname (`cardigan02`) and its tailnet name (`cardigan01`) differ. #476 tracks decoupling service names from hosts.
+- ~~After cutover the box's hostname (`cardigan02`) and its tailnet name (`cardigan01`) differ.~~ Changed at cutover (2026-10-26): no host was renamed. Clients use the service name `cardigan.riechers.co` (Caddy on the LAN, a Cloudflare Access-gated tunnel outside), and hosts keep their own names (#476).
 - **Diarization** still needs a container (whisperx/torch) wherever it eventually runs.
 
 **Not decided here:** how V5 deploys. This ADR covers V4 only; V5 planning is on its own map (#423).
