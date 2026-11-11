@@ -4,27 +4,43 @@
   "airtable": {
     "base_id": "appZ2HGwhiifQToB6",
     "table_id": "tblTKFOwTvK7xw1H5",
-    "table_name": "Single Source of Truth"
+    "table_name": "Single Source of Truth",
+    "field_count": 248,
+    "schema_read": "2026-08-28, live via AirTable Meta API"
   },
   "derived_from": [
     "mcp_server/server.py :: WRITABLE_FIELDS (field ids are ground truth)",
     "mcp_server/server.py :: _extract_sst_fields (the read surface)",
     "config/house_style.yaml :: limits.fields (live limits; server.py holds a fallback copy)",
     "prompts/{analyst,formatter,seo,timestamp}.md (producers)",
-    "api/services/worker.py :: PHASES / OPTIONAL_PHASES"
+    "api/services/worker.py :: PHASES / OPTIONAL_PHASES",
+    "~/Developer/pbswi/automations/airtable/AIRTABLE_SAFETY.md (SST write policy, section 3 and 3a)",
+    "~/Developer/pbswi/automations/airtable/scripts/sst-batch-create.py (the existing Platform Notes writer)",
+    "~/Developer/pbswi/automations/airtable/scripts/sync_airtable_to_obsidian.py (owned-region marker precedent)",
+    "AirTable Meta API schema read of tblTKFOwTvK7xw1H5, 2026-08-28 (248 fields, read-only)"
   ],
   "pipeline": {
-    "phases": ["analyst", "formatter", "seo", "validator"],
-    "optional_phases": ["timestamp"],
+    "phases": [
+      "analyst",
+      "formatter",
+      "seo",
+      "validator"
+    ],
+    "optional_phases": [
+      "timestamp"
+    ],
     "optional_trigger": "timestamp runs automatically for content >= 10 minutes, or on request",
-    "excluded": ["copy_editor"]
+    "excluded": [
+      "copy_editor"
+    ]
   },
   "write_safety_classes": {
     "generated": "Cardigan is the intended author. Overwrite is the normal case; per-record caution still applies when a human has reviewed the value.",
     "human_authoritative": "The pipeline READS this field as ground truth. Writing it can degrade later runs. Must not be written without an explicit, reviewed decision.",
     "no_producer": "On the write allowlist, but nothing in the pipeline generates it. Cannot be filled today.",
     "read_only": "Never written. Context or provenance only.",
-    "unmapped": "The pipeline produces this, but no AirTable SST field accepts it."
+    "unmapped": "The pipeline produces this, but no AirTable SST field accepts it.",
+    "shared_with_humans": "The field holds human-authored content alongside machine content. Only an owned, delimited block may be written; everything outside it must be preserved byte-for-byte."
   },
   "deliverables": [
     {
@@ -33,8 +49,14 @@
       "airtable_field": "Release Title",
       "airtable_field_id": "fldXqxjjxR4z5IJv6",
       "writable": true,
-      "limit": {"type": "chars", "max": 80},
-      "producer": {"phase": "seo", "section": "Title (Final Recommendation)"},
+      "limit": {
+        "type": "chars",
+        "max": 80
+      },
+      "producer": {
+        "phase": "seo",
+        "section": "Title (Final Recommendation)"
+      },
       "write_safety": "generated",
       "status": "ok"
     },
@@ -44,8 +66,14 @@
       "airtable_field": "Short Description",
       "airtable_field_id": "fldDwTtKlOCdgKHpW",
       "writable": true,
-      "limit": {"type": "chars", "max": 90},
-      "producer": {"phase": "seo", "section": "Short Description (90 chars max)"},
+      "limit": {
+        "type": "chars",
+        "max": 90
+      },
+      "producer": {
+        "phase": "seo",
+        "section": "Short Description (90 chars max)"
+      },
       "write_safety": "generated",
       "status": "ok"
     },
@@ -55,8 +83,14 @@
       "airtable_field": "Long Description",
       "airtable_field_id": "fld6HsWiKL77bFqo1",
       "writable": true,
-      "limit": {"type": "chars", "max": 350},
-      "producer": {"phase": "seo", "section": "Long Description (350 chars max)"},
+      "limit": {
+        "type": "chars",
+        "max": 350
+      },
+      "producer": {
+        "phase": "seo",
+        "section": "Long Description (350 chars max)"
+      },
       "write_safety": "generated",
       "status": "ok"
     },
@@ -66,8 +100,21 @@
       "airtable_field": "General Keywords/Tags",
       "airtable_field_id": "fldjdPEXZyvx3rc6Y",
       "writable": true,
-      "limit": {"type": "count", "min": 15, "max": 20, "override": {"short": {"min": 5, "max": 10}}},
-      "producer": {"phase": "seo", "section": "AMBIGUOUS -- see gap G1"},
+      "limit": {
+        "type": "count",
+        "min": 15,
+        "max": 20,
+        "override": {
+          "short": {
+            "min": 5,
+            "max": 10
+          }
+        }
+      },
+      "producer": {
+        "phase": "seo",
+        "section": "AMBIGUOUS -- see gap G1"
+      },
       "write_safety": "generated",
       "status": "ambiguous_producer",
       "note": "Two distinct 15-20 item lists compete for this one field: the flattened Keyword Strategy tiers (house_style.yaml line 330: 'Aim for 15-20 total keywords across the SEO Keywords section') and the separate 'YouTube Tags (15-20 recommended)' block. The prompt never says which one lands here."
@@ -78,15 +125,23 @@
       "airtable_field": "Hashtags",
       "airtable_field_id": "fldYSGo5EBidQYL7W",
       "writable": true,
-      "limit": {"type": "count", "min": 5, "max": 10, "source": "prompt only; no house_style limit"},
-      "producer": {"phase": "seo", "section": "Social Media Hashtags (5-10 recommended)"},
+      "limit": {
+        "type": "count",
+        "min": 5,
+        "max": 10,
+        "source": "prompt only; no house_style limit"
+      },
+      "producer": {
+        "phase": "seo",
+        "section": "Social Media Hashtags (5-10 recommended)"
+      },
       "write_safety": "generated",
       "status": "ok"
     },
     {
       "key": "social_description",
       "category": "copy",
-      "airtable_field": "Social Media Description",
+      "airtable_field": "Social Media Description or Producer Draft",
       "airtable_field_id": "fldntHlzk6PfIT5k2",
       "writable": true,
       "limit": null,
@@ -122,25 +177,40 @@
     {
       "key": "formatted_transcript",
       "category": "formatted_transcript",
-      "producer": {"phase": "formatter", "artifact": "formatter_output.md"},
-      "airtable_field": null,
-      "write_safety": "unmapped",
-      "status": "no_target",
-      "note": "The map's stage 5 expects a transcript LINK in a platform-notes field. No such field is referenced anywhere in the codebase. See gap G3."
+      "producer": {
+        "phase": "formatter",
+        "artifact": "formatter_output.md"
+      },
+      "airtable_field": "Platform Notes",
+      "write_safety": "shared_with_humans",
+      "status": "target_identified_pending_authorization",
+      "note": "No dedicated URL field exists for a transcript link -- note that the SST field literally named 'Transcript' (fldmWY1YglRIpbF2E) is a DATE, not a link. Platform Notes is the only viable target, sharing the owned block with chapters.",
+      "airtable_field_id": "fldcZgr4ZZTSFR2TE",
+      "airtable_field_type": "richText",
+      "shared_field": true
     },
     {
       "key": "chapters",
       "category": "metadata",
-      "producer": {"phase": "timestamp", "artifact": "timestamp_output.md"},
-      "airtable_field": null,
-      "write_safety": "unmapped",
-      "status": "no_target",
-      "note": "Chapter timestamps are copy-pasted by editors into publishing platforms today. Destined for the same platform-notes field. See gap G3."
+      "producer": {
+        "phase": "timestamp",
+        "artifact": "timestamp_output.md"
+      },
+      "airtable_field": "Platform Notes",
+      "write_safety": "shared_with_humans",
+      "status": "target_identified_pending_authorization",
+      "note": "Platform Notes exists and ALREADY carries chapter timestamps on 8 of 69 populated records, in the same '0:00 Label' format the timestamp phase emits. It is a shared field: 45 of 69 are human free prose with no machine marker, and 24 carry an AUTO-GENERATED header written by pbswi's sst-batch-create.py. A blind write destroys human operational notes. Use the owned-block format (see gaps G3).",
+      "airtable_field_id": "fldcZgr4ZZTSFR2TE",
+      "airtable_field_type": "richText",
+      "shared_field": true
     },
     {
       "key": "youtube_tags",
       "category": "metadata",
-      "producer": {"phase": "seo", "section": "YouTube Tags (15-20 recommended)"},
+      "producer": {
+        "phase": "seo",
+        "section": "YouTube Tags (15-20 recommended)"
+      },
       "airtable_field": null,
       "write_safety": "unmapped",
       "status": "no_target",
@@ -149,7 +219,10 @@
     {
       "key": "quality_score",
       "category": "context",
-      "producer": {"phase": "seo", "section": "Quality Score"},
+      "producer": {
+        "phase": "seo",
+        "section": "Quality Score"
+      },
       "airtable_field": null,
       "write_safety": "read_only",
       "status": "context_confirmed",
@@ -159,14 +232,22 @@
   "context_layer": {
     "note": "Reviewable, never published. Confirms question 2: these have no AirTable target by design.",
     "analyst_output.md": [
-      "Summary", "Key Themes", "Speakers & Roles", "Structural Breakdown",
-      "Key Quotes & Moments", "SEO Keywords (Preliminary)", "Editorial Opportunities",
-      "Production Notes", "Review Items for Formatter"
+      "Summary",
+      "Key Themes",
+      "Speakers & Roles",
+      "Structural Breakdown",
+      "Key Quotes & Moments",
+      "SEO Keywords (Preliminary)",
+      "Editorial Opportunities",
+      "Production Notes",
+      "Review Items for Formatter"
     ],
     "seo_output.md": [
       "Keyword Strategy tiers (Primary / Secondary / Long-Tail / Location)",
-      "Platform-Specific Recommendations", "SEMRush Integration",
-      "Accessibility & Inclusivity", "Next Steps"
+      "Platform-Specific Recommendations",
+      "SEMRush Integration",
+      "Accessibility & Inclusivity",
+      "Next Steps"
     ],
     "validator_output.md": [
       "Dissolving -- the map's standing decision replaces this with per-item status."
@@ -183,5 +264,39 @@
       "ld_status": "LD Character Count",
       "special_thanks": "Episode Special Thanks"
     }
+  },
+  "sst_write_governance": {
+    "policy": "SST is READ-ONLY by default and technically enforced in the pbswi automations: airtable_writer.py raises AirTableSafetyError on any write. Writes require an explicit allow_tables override plus documented user authorization.",
+    "source": "~/Developer/pbswi/automations/airtable/AIRTABLE_SAFETY.md section 3",
+    "only_sanctioned_bulk_path": "Templated SST batch CREATE (section 3a), governed by C1-C5. C3 is create-only: it never updates an existing SST record.",
+    "cardigan_status": "Cardigan's patch_sst_record (mcp_server/server.py) PATCHes SST directly with the API key and does NOT route through airtable_writer.py. It therefore bypasses the safety layer entirely -- no allowlist check, no rollback log, no collision guard. Every Cardigan publish is an UPDATE, which is exactly what the one sanctioned path excludes.",
+    "implication": "The publish path needs documented authorization before it can ship, independent of any field mapping."
+  },
+  "platform_notes_contract": {
+    "field": "Platform Notes (fldcZgr4ZZTSFR2TE, richText)",
+    "occupancy_2026_08_28": {
+      "populated": 69,
+      "human_prose_no_marker": 45,
+      "auto_generated_header": 24,
+      "contains_chapters": 8,
+      "contains_url": 9,
+      "inside_wisconsin_politics": 25
+    },
+    "existing_writers": [
+      "humans (majority holder)",
+      "pbswi sst-batch-create.py (AUTO-GENERATED header)"
+    ],
+    "format": {
+      "rule": "Read-modify-write an owned block. Never replace the whole field.",
+      "start_marker": "--- CARDIGAN AUTO START ---",
+      "end_marker": "--- CARDIGAN AUTO END ---",
+      "on_write": "If exactly one ordered marker pair is present (start before end), replace only what lies between them. If no markers are present, APPEND the block after existing content with one blank line of separation. Anything else (one marker, end before start, multiple pairs): refuse and surface for a human. Never touch bytes outside the markers.",
+      "concurrency": "AirTable has no compare-and-swap. Use the commit_sst_edits mechanism: re-fetch immediately before PATCH and abort if the field changed since the proposal. This narrows the race window but does not close it.",
+      "round_trip": "richText is markdown-flavoured ('---' can render as a rule). The first implementation must write, read back, and confirm the markers survive; marker matching should tolerate whitespace/escaping changes.",
+      "precedent": "Mirrors the AIRTABLE_SYNC_START/END owned-region convention in pbswi's sync_airtable_to_obsidian.py. Plain-text markers rather than HTML comments, because AirTable richText renders comments literally.",
+      "contents": "The chapter list, and the transcript link when one exists.",
+      "single_writer": "Phases never write AirTable. The transcript link (formatter) and chapters (timestamp) have independent producers and would race for the same block if each wrote on completion -- the later write would erase the earlier one. The block is assembled and written ONCE by the publish step from current job state, so a re-publish rewrites it wholesale and is idempotent. Matches the map's stage 5: publish is a single universal action, not a per-phase side effect."
+    },
+    "blocking_governance": "Field answered, write posture open. As of this audit (2026-08-28) pbswi issue #142 ('Confirm with Lisa: OK to use SST Platform Notes for automation metadata stamps?') was open and untouched since 2026-07-02. Update 2026-10-21: the field question was answered on 2026-09-01 -- Platform Notes is a Digital Team field, already used for automation timestamps and chapter lists. Still open: the base owner's sign-off on automated SST writes and the conditions on Cardigan's write path, tracked in pbswi-ops#9; shipping waits on that. 'target_identified_pending_authorization' is not a go-ahead: Platform Notes is not in WRITABLE_FIELDS, and adding it is a separate, gated allowlist change."
   }
 }

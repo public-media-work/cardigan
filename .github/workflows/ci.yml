@@ -25,12 +25,40 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
+          cache-dependency-path: requirements-dev.txt
       - name: Install lint tools
         run: pip install -r requirements-dev.txt
       - name: Ruff check
         run: ruff check .
       - name: Black check
         run: black --check .
+
+  lock-check:
+    name: Lockfile in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        # Recompile the lock locally with this same uv version: output format
+        # differs between uv releases, so a different version shows up here as a
+        # spurious diff. To fix a failing check (e.g. a Dependabot bump to
+        # requirements.txt), run the command in requirements.lock's header on
+        # the branch and commit the result.
+        run: pip install uv==0.12.17
+      - name: Recompile against the committed lock
+        # uv prefers the versions already pinned in the output file, so this only
+        # changes the lock when requirements.txt / requirements-dev.txt demand it.
+        # A diff means someone edited the ranges without recompiling — fail loudly
+        # rather than let the images and the native box drift from the ranges.
+        run: |
+          cp requirements.lock /tmp/requirements.lock
+          uv pip compile requirements.txt requirements-dev.txt --universal --python-version 3.13 \
+            --custom-compile-command "uv pip compile requirements.txt requirements-dev.txt --universal --python-version 3.13 -o requirements.lock" \
+            -o /tmp/requirements.lock
+          diff -u requirements.lock /tmp/requirements.lock
 
   lint-frontend:
     name: Frontend Lint
@@ -64,8 +92,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
+          cache-dependency-path: requirements.lock
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
+        # requirements.lock is compiled from requirements.txt + requirements-dev.txt,
+        # so tests run against exactly the versions the images and native box install.
+        run: pip install -r requirements.lock
       - name: Create required directories
         run: mkdir -p OUTPUT transcripts logs
       - name: Run database migrations
@@ -108,8 +139,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
+          cache-dependency-path: requirements.lock
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.lock
       - name: Run Alembic migrations
         run: alembic upgrade head
       - name: Verify tables created

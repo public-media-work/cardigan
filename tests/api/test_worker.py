@@ -5,6 +5,7 @@ and recovery analysis.
 """
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -1161,6 +1162,64 @@ class TestWorkerRestartSignal:
             assert await worker._should_stop_for_restart() is False
 
 
+class TestReasoningPerPhase:
+    """Reasoning tokens share the max_tokens budget, so the formatter disables them.
+
+    Measured on anthropic/claude-sonnet-5 with max_tokens=16384: reasoning took
+    12575 of 16384 tokens and the formatter stopped mid-sentence at 2044 words.
+    With reasoning off the same prompt finished cleanly in 6023 tokens (#403/#404).
+    """
+
+    def _worker_with_config(self, routing, backend_types=None):
+        from types import SimpleNamespace
+
+        from api.services.worker import JobWorker
+
+        types_by_backend = backend_types or {"openrouter": "openrouter", "openai": "openai"}
+        worker = JobWorker()
+        worker.llm = SimpleNamespace(
+            config={"routing": routing},
+            get_backend_config=lambda b: {"type": types_by_backend.get(b)},
+        )
+        return worker
+
+    def test_formatter_disables_reasoning(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openrouter") == {"enabled": False}
+
+    def test_other_phases_keep_reasoning(self):
+        """The validator is a judgment task — leave its reasoning alone."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("validator", "openrouter") is None
+
+    def test_disabled_phases_is_configurable(self):
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter", "timestamp"]}})
+        assert worker._reasoning_payload("timestamp", "openrouter") == {"enabled": False}
+        assert worker._reasoning_payload("analyst", "openrouter") is None
+
+    def test_missing_config_leaves_reasoning_untouched(self):
+        """No reasoning config means no opinion — don't send the parameter."""
+        worker = self._worker_with_config({})
+        assert worker._reasoning_payload("formatter", "openrouter") is None
+
+    def test_not_sent_to_an_openai_type_backend(self):
+        """`{"enabled": False}` is OpenRouter's wire format (#404 review).
+
+        _call_openai spreads **kwargs straight into its payload, so sending it
+        there puts an unrecognised `reasoning` field on the request, which a
+        real OpenAI-compatible endpoint can reject. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format.
+        """
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}})
+        assert worker._reasoning_payload("formatter", "openai") is None
+
+    def test_unknown_backend_sends_nothing(self):
+        """Fail closed: if the backend type can't be resolved, send no parameter."""
+        worker = self._worker_with_config({"reasoning": {"disabled_phases": ["formatter"]}}, backend_types={})
+        assert worker._reasoning_payload("formatter", "mystery") is None
+
+
 class TestChunkWrapperInstructions:
     """FMT-1: the chunked formatter produced a document with no header and no
     Status footer, and every deterministic gate passed it.
@@ -1217,6 +1276,47 @@ class TestRetryContextSection:
 
     def test_empty_without_retry_context(self):
         assert self._worker()._retry_context_section({}) == ""
+
+
+class TestChunkHeaderFields:
+    """FMT-1: chunk 0 sees only its own slice, so the header it writes carries
+    that slice's duration -- job 24 (6POL0214) said 00:11:06 for an 18:37
+    episode. The merge writes the header from these values instead."""
+
+    _SRT = "1\n00:00:00,000 --> 00:00:04,000\nHello.\n\n2\n00:18:33,000 --> 00:18:37,351\nGoodbye.\n"
+
+    def _worker(self):
+        from api.services.worker import JobWorker
+
+        return JobWorker()
+
+    def test_values_from_metadata(self):
+        fields = self._worker()._chunk_header_fields(
+            {
+                "project_name": "6POL0214",
+                "transcript_file": "6POL0214.srt",
+                "transcript": self._SRT,
+                "sst_context": {"program": "Inside Wisconsin Politics"},
+            }
+        )
+        assert fields["Project"] == "6POL0214"
+        assert fields["Program"] == "Inside Wisconsin Politics"
+        assert fields["Duration"] == "00:18:37"
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields["Date Processed"])
+
+    def test_no_duration_without_srt(self):
+        """A plain-text transcript has no timecodes; a word-count estimate is
+        not a duration, so the field is left for the merge to omit."""
+        fields = self._worker()._chunk_header_fields(
+            {"project_name": "X", "transcript_file": "x.txt", "transcript": "Hello."}
+        )
+        assert fields["Duration"] is None
+        assert fields["Program"] is None
+
+    def test_none_transcript_file_does_not_raise(self):
+        """A present-but-None transcript_file must not fail the merge (#421 review)."""
+        fields = self._worker()._chunk_header_fields({"project_name": "X", "transcript_file": None})
+        assert fields["Duration"] is None
 
 
 class TestTruncationMessage:

@@ -15,13 +15,17 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from api.models.events import EventCreate, EventData, EventType, SessionEvent
+from api.models.item import GenerationState, Item, ItemCategory, ItemList, ItemUpdate, Origin, ReviewState
 from api.models.job import Job, JobStatus, JobUpdate, PhaseStatus
 from api.services.airtable import AirtableClient
 from api.services.database import (
     get_events_for_job,
     get_job,
+    get_job_item,
+    get_job_items,
     log_event,
     update_job,
+    update_job_item,
 )
 
 logger = logging.getLogger(__name__)
@@ -890,3 +894,101 @@ async def retry_phase(
         phase=phase_name,
         message=f"Phase '{phase_name}' retry started for job {job_id}. Refresh to see results.",
     )
+
+
+# ============================================================================
+# Items (#426)
+# ============================================================================
+
+
+def _count(items: list, attr: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        value = getattr(item, attr).value
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+@router.get("/{job_id}/items", response_model=ItemList)
+async def list_job_items(
+    job_id: int,
+    include: Optional[str] = Query(
+        None,
+        description="Pass 'values' to hydrate large values (the formatted transcript is 50-150KB)",
+    ),
+    category: Optional[ItemCategory] = Query(None, description="Filter to one category"),
+    origin: Optional[Origin] = Query(None, description="Filter to deterministic or inferred"),
+    review_state: Optional[ReviewState] = Query(None, description="Filter to one review state"),
+    generation_state: Optional[GenerationState] = Query(None, description="Filter to one generation state"),
+):
+    """List a job's items — every output of the job, each labelled
+    deterministic or inferred.
+
+    Large values are omitted by default; pass ``?include=values`` to hydrate
+    them. Nothing in this response blocks: flags are advisory.
+    """
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    include_values = include == "values"
+    items = await get_job_items(job_id, include_values=include_values)
+
+    if category is not None:
+        items = [item for item in items if item.category == category]
+    if origin is not None:
+        items = [item for item in items if item.origin == origin]
+    if review_state is not None:
+        items = [item for item in items if item.review_state == review_state]
+    if generation_state is not None:
+        items = [item for item in items if item.generation_state == generation_state]
+
+    return ItemList(
+        items=items,
+        total=len(items),
+        job_id=job_id,
+        values_included=include_values,
+        summary={
+            "by_origin": _count(items, "origin"),
+            "by_review_state": _count(items, "review_state"),
+            "by_generation_state": _count(items, "generation_state"),
+            "by_category": _count(items, "category"),
+            "edited": sum(1 for item in items if item.edited_value is not None),
+            "affirmed": sum(1 for item in items if item.is_affirmation()),
+            "flagged": sum(1 for item in items if item.has_errors()),
+        },
+    )
+
+
+@router.get("/{job_id}/items/{key}", response_model=Item)
+async def get_single_job_item(job_id: int, key: str):
+    """Retrieve one item by key, always with its full values."""
+    item = await get_job_item(job_id, key)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Item '{key}' not found on job {job_id}")
+    return item
+
+
+@router.patch("/{job_id}/items/{key}", response_model=Item)
+async def patch_job_item(job_id: int, key: str, body: ItemUpdate):
+    """Apply an editor action to one item: a hand edit and/or a review verdict.
+
+    Accepts ``edited_value`` (send null to clear) and ``review_state`` only.
+    Anything else is rejected with 422 — origin, basis, generation state and
+    provenance belong to the system. There is no push here: the REST API
+    stays read-only for SST until the push endpoint exists (#428).
+    """
+    item = await update_job_item(job_id, key, body)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Item '{key}' not found on job {job_id}")
+
+    logger.info(
+        "Item updated",
+        extra={
+            "job_id": job_id,
+            "item_key": key,
+            "review_state": item.review_state.value,
+            "edited": item.edited_value is not None,
+        },
+    )
+    return item

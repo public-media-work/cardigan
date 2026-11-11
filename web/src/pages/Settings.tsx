@@ -5,7 +5,14 @@ import { AGENT_INFO } from '../constants/agents'
 import ModelStatsWidget from '../components/ModelStatsWidget'
 import PhaseStatsWidget from '../components/PhaseStatsWidget'
 import RestartComponentsButton from '../components/RestartComponentsButton'
-import { groupAvailableModels } from '../utils/modelGroups'
+import {
+  aliasOptionLabel,
+  familyLabel,
+  groupAvailableModels,
+  isModelAlias,
+  resolvedModelName,
+  type ModelAliasOption,
+} from '../utils/modelGroups'
 import { isRemotePreview } from '../utils/preview'
 
 // Upper bound on the "restarting…" banner. Recovery is normally detected from
@@ -27,6 +34,7 @@ interface PhaseModelsConfig {
   phase_models: Record<string, string>
   available_models: AvailableModel[]
   available_phases: string[]
+  model_aliases?: ModelAliasOption[]
 }
 
 interface BackendInfo {
@@ -288,6 +296,7 @@ export default function Settings() {
     () => groupAvailableModels(phaseModels?.available_models || []),
     [phaseModels?.available_models],
   )
+  const modelAliases = phaseModels?.model_aliases || []
 
   const handleAddEndpoint = async () => {
     setBackendBusy(true)
@@ -616,6 +625,12 @@ export default function Settings() {
                   const currentModel = pendingPhaseModels?.[agent.id]
                     || phaseModels?.phase_models?.[agent.id]
                     || ''
+                  const currentAlias = isModelAlias(currentModel)
+                    ? modelAliases.find((a) => a.id === currentModel)
+                    : undefined
+                  const runsOn = currentAlias
+                    ? resolvedModelName(currentAlias, phaseModels?.available_models || [])
+                    : null
 
                   return (
                     <div key={agent.id} className="p-4 bg-surface-900 rounded-lg space-y-2">
@@ -634,7 +649,17 @@ export default function Settings() {
                           onChange={(e) => handlePhaseModelChange(agent.id, e.target.value)}
                           className="pl-3 pr-8 py-2 rounded-md border text-sm font-medium bg-surface-800 border-surface-600 text-surface-200"
                           aria-label={`Select model for ${agent.name} agent`}
+                          aria-describedby={currentAlias ? `model-${agent.id}-runs-on` : undefined}
                         >
+                          {modelAliases.length > 0 && (
+                            <optgroup label="Latest (follows new releases)">
+                              {modelAliases.map((a) => (
+                                <option key={a.id} value={a.id} className="bg-surface-800 text-white">
+                                  {aliasOptionLabel(a, phaseModels?.available_models || [])}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
                           {modelGroups.map((group) => (
                             <optgroup key={group.label} label={group.label}>
                               {group.models.map((m) => (
@@ -647,6 +672,13 @@ export default function Settings() {
                         </select>
                       </div>
                       <p className="text-sm text-surface-400 pl-8 max-w-prose">{agent.description}</p>
+                      {currentAlias && (
+                        <p id={`model-${agent.id}-runs-on`} className="text-sm text-surface-300 pl-8 max-w-prose">
+                          {runsOn
+                            ? `Runs on ${runsOn} now. Switches automatically when a newer ${familyLabel(currentAlias)} is released.`
+                            : `Follows the newest ${familyLabel(currentAlias)}. The current version can't be checked right now.`}
+                        </p>
+                      )}
                     </div>
                   )
                 })}
@@ -995,7 +1027,7 @@ export default function Settings() {
             <div className="bg-surface-800 rounded-lg border border-surface-700 p-6">
               <h2 className="text-lg font-semibold text-white mb-4">System Components</h2>
               <p className="text-sm text-surface-400 mb-6">
-                Monitor the containerized services that power The Metadata Neighborhood. Components are managed by Docker Compose.
+                Monitor the services that power The Metadata Neighborhood.
               </p>
 
               <div className="space-y-4">
@@ -1007,12 +1039,12 @@ export default function Settings() {
                       <div>
                         <div className="font-medium text-white">API Server</div>
                         <div className="text-sm text-surface-400">
-                          Running - Managed by Docker
+                          Running
                         </div>
                       </div>
                     </div>
                     <div className="px-3 py-1 text-xs bg-pbs-500/20 text-pbs-400 border border-pbs-500/30 rounded">
-                      Container: {systemStatus?.api.container ?? 'cardigan-api'}
+                      Service: {systemStatus?.api.container ?? 'cardigan-api'}
                     </div>
                   </div>
                 </div>
@@ -1025,14 +1057,12 @@ export default function Settings() {
                       <div>
                         <div className="font-medium text-white">Worker</div>
                         <div className="text-sm text-surface-400">
-                          {systemStatus?.worker.running
-                            ? 'Running - Managed by Docker'
-                            : 'Managed by Docker'}
+                          {systemStatus?.worker.running ? 'Running' : 'Not running - no recent heartbeat'}
                         </div>
                       </div>
                     </div>
                     <div className="px-3 py-1 text-xs bg-pbs-500/20 text-pbs-400 border border-pbs-500/30 rounded">
-                      Container: {systemStatus?.worker.container ?? 'cardigan-worker'}
+                      Service: {systemStatus?.worker.container ?? 'cardigan-worker'}
                     </div>
                   </div>
                 </div>
@@ -1045,12 +1075,12 @@ export default function Settings() {
                       <div>
                         <div className="font-medium text-white">Transcript Watcher</div>
                         <div className="text-sm text-surface-400">
-                          {systemStatus?.watcher.running ? 'Running - Managed by Docker' : 'Not running - no recent heartbeat'}
+                          {systemStatus?.watcher.running ? 'Running' : 'Not running - no recent heartbeat'}
                         </div>
                       </div>
                     </div>
                     <div className="px-3 py-1 text-xs bg-pbs-500/20 text-pbs-400 border border-pbs-500/30 rounded">
-                      Container: {systemStatus?.watcher.container ?? '—'}
+                      Service: {systemStatus?.watcher.container ?? '—'}
                     </div>
                   </div>
                 </div>
@@ -1058,59 +1088,6 @@ export default function Settings() {
 
               <div className="mt-6">
                 <RestartComponentsButton onConfirm={restartComponents} restarting={restarting} />
-              </div>
-            </div>
-
-            {/* Folder Paths */}
-            <div className="bg-surface-800 rounded-lg border border-surface-700 p-6">
-              <h2 className="text-lg font-semibold text-white mb-4">Docker Volume Mounts</h2>
-              <p className="text-sm text-surface-400 mb-4">
-                Persistent data volumes mounted in the container
-              </p>
-              <div className="space-y-3 text-sm">
-                <div className="flex justify-between p-3 bg-surface-900 rounded">
-                  <span className="text-surface-400">Transcripts (input)</span>
-                  <code className="text-pbs-300">/data/transcripts</code>
-                </div>
-                <div className="flex justify-between p-3 bg-surface-900 rounded">
-                  <span className="text-surface-400">Output (processed)</span>
-                  <code className="text-pbs-300">/data/output</code>
-                </div>
-                <div className="flex justify-between p-3 bg-surface-900 rounded">
-                  <span className="text-surface-400">Database</span>
-                  <code className="text-pbs-300">/data/db/dashboard.db</code>
-                </div>
-                <div className="flex justify-between p-3 bg-surface-900 rounded">
-                  <span className="text-surface-400">Uploads</span>
-                  <code className="text-pbs-300">/data/uploads</code>
-                </div>
-              </div>
-            </div>
-
-            {/* Terminal Commands */}
-            <div className="bg-surface-800 rounded-lg border border-surface-700 p-4">
-              <div className="flex items-start space-x-3">
-                <span className="text-pbs-400 text-xl">🐳</span>
-                <div className="w-full">
-                  <h3 className="text-sm font-medium text-white">Docker Commands</h3>
-                  <p className="text-xs text-surface-400 mt-1 mb-3">
-                    Manage the containerized system via Docker Compose
-                  </p>
-                  <div className="space-y-2 text-xs">
-                    <div className="p-2 bg-surface-900 rounded">
-                      <div className="text-surface-400 mb-1">View logs:</div>
-                      <code className="text-green-400">docker compose logs -f</code>
-                    </div>
-                    <div className="p-2 bg-surface-900 rounded">
-                      <div className="text-surface-400 mb-1">Stop system:</div>
-                      <code className="text-green-400">docker compose down</code>
-                    </div>
-                    <div className="p-2 bg-surface-900 rounded">
-                      <div className="text-surface-400 mb-1">Rebuild and restart:</div>
-                      <code className="text-green-400">docker compose up --build -d</code>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           </div>

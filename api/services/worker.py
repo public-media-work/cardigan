@@ -36,6 +36,7 @@ from api.services.escalation import (
     select_escalation_phases,
 )
 from api.services.llm import (
+    DEFAULT_MAX_TOKENS,
     BackendUnavailableError,
     CreditExhaustedError,
     LLMResponse,
@@ -88,7 +89,7 @@ SST_CONTEXT_FIELD_MAP = {
     "host": "Host",
     "presenter": "Presenter",
     "media_id": "Media ID",
-    "social_media_description": "Social Media Description",
+    "social_media_description": "Social Media Description or Producer Draft",
 }
 
 # Fields read outside the mapping above: the working-title fallback and the
@@ -102,6 +103,19 @@ SST_PROJECT_FIELD_MAP = {
     "project_notes": "Notes",
     "project_description": "Project Description",
 }
+
+# Projects are often season-scoped ("Wisconsin Life | Season 13"); the
+# formatter's **Program:** header is the show, and the validator holds it to
+# the SST value, so the season designation comes off (cardigan02 job 28).
+_SEASON_SUFFIX = re.compile(r"\s*\|\s*Season\s+\d+\s*$", re.IGNORECASE)
+
+
+def program_from_project_name(name: Any) -> Any:
+    """The program a Project name stands for: its name minus a "| Season N" suffix."""
+    if not isinstance(name, str):
+        return name
+    return _SEASON_SUFFIX.sub("", name).strip() or name
+
 
 # The complete SST-table read surface, pinned against the schema snapshot.
 SST_CONTEXT_AIRTABLE_FIELDS = tuple(SST_CONTEXT_FIELD_MAP.values()) + _SST_EXTRA_FIELDS
@@ -193,13 +207,25 @@ def apply_validator_model(phases: list, model: Optional[str]) -> list:
     return phases
 
 
+ESCALATED_PHASE_FIELDS = ("model", "cost", "tokens", "input_tokens", "output_tokens")
+
+
+def _escalated_phase_info(result: Dict[str, Any], fallback_model: Optional[str] = None) -> Dict[str, Any]:
+    """The per-phase attribution fields from one ``_run_phase`` result."""
+    info = {key: result.get(key) for key in ESCALATED_PHASE_FIELDS}
+    info["model"] = info["model"] or fallback_model
+    return info
+
+
 def apply_escalated_phase_models(phases: Optional[list], escalated: Dict[str, dict]) -> Optional[list]:
-    """Refresh persisted ``phases[]`` with the model/cost from escalated re-runs (#243).
+    """Refresh persisted ``phases[]`` with the model/cost/tokens from escalated re-runs (#243).
 
     The escalated ``_run_phase`` calls in the QA gate don't update the job's
     persisted ``phases[]`` (only the main loop does), so per-phase attribution
-    would otherwise stay stale at the pre-escalation model. ``escalated`` maps
-    ``phase_name -> {"model": ..., "cost": ...}``. Handles both ``JobPhase``
+    would otherwise stay stale at the pre-escalation run. ``escalated`` maps
+    ``phase_name -> {"model", "cost", "tokens", "input_tokens", "output_tokens"}``;
+    absent keys leave the field alone. Token counts were once left at the first
+    pass's values while model and cost moved on (#500). Handles both ``JobPhase``
     objects and dict entries. Returns the (mutated) ``phases`` list.
     """
     if not phases:
@@ -209,18 +235,14 @@ def apply_escalated_phase_models(phases: Optional[list], escalated: Dict[str, di
         info = escalated.get(name) if name else None
         if not info:
             continue
-        model = info.get("model")
-        cost = info.get("cost")
-        if isinstance(p, dict):
-            if model:
-                p["model"] = model
-            if cost is not None:
-                p["cost"] = cost
-        else:
-            if model:
-                p.model = model
-            if cost is not None:
-                p.cost = cost
+        updates = {key: info.get(key) for key in ESCALATED_PHASE_FIELDS if info.get(key) is not None}
+        if not info.get("model"):
+            updates.pop("model", None)
+        for key, value in updates.items():
+            if isinstance(p, dict):
+                p[key] = value
+            else:
+                setattr(p, key, value)
     return phases
 
 
@@ -795,6 +817,8 @@ Extract any name or spelling corrections that should be added to the glossary. S
         # Pick up any model/config changes made via the Settings API since
         # this worker process started (api and worker are separate containers).
         self.llm.reload_config()
+        # Model aliases ("latest Sonnet") resolve once per run and stay pinned for it.
+        self.llm.reset_job_models(job_id)
         project_name = job.get("project_name") or "Unknown"
 
         logger.info("Processing job", extra={"job_id": job_id, "project_name": project_name})
@@ -864,7 +888,9 @@ Extract any name or spelling corrections that should be added to the glossary. S
             routing_config = self.llm.config.get("routing", {})
             threshold_minutes = routing_config.get("long_form_threshold_minutes", 15)
             transcript_metrics = calculate_transcript_metrics(
-                transcript_content, long_form_threshold_minutes=threshold_minutes
+                transcript_content,
+                long_form_threshold_minutes=threshold_minutes,
+                is_srt=str(job.get("transcript_file", "")).lower().endswith(".srt"),
             )
             # Prefer SRT-parsed duration over the word-count estimate so every
             # downstream consumer (routing, prompt context, persisted
@@ -1360,6 +1386,23 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # starts a fresh capacity-wait ceiling rather than inheriting this one.
                 await clear_defer_state(job_id)
 
+                # Extract the job's items (#426). Kill-switched by default
+                # (routing.items in config/llm-config.json) so this is inert in
+                # prod until the job page exists — the SST lookup it performs
+                # is the only prod-visible side effect. Non-fatal either way:
+                # a job that produced good output must not be marked failed
+                # because extraction had a bad day.
+                if self.llm.config.get("routing", {}).get("items", {}).get("enabled"):
+                    try:
+                        from api.services.item_sync import refresh_job_items
+
+                        await refresh_job_items(job_id, llm_config=self.llm.config)
+                    except Exception as item_err:
+                        logger.warning(
+                            "Failed to extract job items (non-fatal)",
+                            extra={"job_id": job_id, "error": str(item_err)},
+                        )
+
                 # Archive the transcript file (non-fatal if this fails). Only on
                 # completion — a paused job may be reviewed/retried and still needs
                 # its source transcript, so we must NOT move it away on pause.
@@ -1442,6 +1485,32 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 self._heartbeat_task = None
             self._current_job_id = None
 
+    def _reasoning_payload(self, phase_name: str, backend: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Reasoning control to send for this phase, or None to leave it alone.
+
+        Reasoning tokens are drawn from the same max_tokens budget as visible
+        output, so on a reasoning-by-default model a formatter call can spend
+        most of its cap thinking and stop mid-transcript. Formatting is
+        deterministic work that does not need it; judgment phases may, so this
+        is per-phase rather than global (#404).
+
+        Gated on backend TYPE as well as phase. ``{"enabled": False}`` is
+        OpenRouter's wire format, and ``_call_openai`` spreads ``**kwargs``
+        straight into its payload — so sending this to an openai-type backend
+        would put an unrecognised ``reasoning`` field on the request, which a
+        real OpenAI-compatible endpoint can reject outright. Phase backends are
+        reassignable from config and the Settings UI, so the phase name alone
+        does not tell us the wire format (#404 review).
+        """
+        cfg = self.llm.config.get("routing", {}).get("reasoning", {})
+        if phase_name not in (cfg.get("disabled_phases") or []):
+            return None
+        try:
+            backend_type = self.llm.get_backend_config(backend).get("type")
+        except Exception:
+            return None
+        return {"enabled": False} if backend_type == "openrouter" else None
+
     def _chunk_wrapper_instructions(self, chunk_index: int, total_chunks: int) -> str:
         """Header/footer duties for one chunk of a chunked formatter run (FMT-1).
 
@@ -1467,6 +1536,32 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 "end the document with the Status footer the system prompt specifies."
             )
         return ("\n\n".join(parts) + "\n\n") if parts else ""
+
+    def _chunk_header_fields(self, context: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """Authoritative header values for a chunked formatter merge (FMT-1).
+
+        Chunk 0 only sees its own slice, so a duration it writes is the
+        slice's -- job 24 reported 00:11:06 for an 18:37 episode -- and no
+        prompt can fix that. ``merge_formatter_chunks`` writes the header from
+        these values instead; a None falls back to chunk 0's value, except
+        Duration, which is omitted.
+
+        Duration is measured from the SRT's own timecodes, never from
+        ``transcript_metrics``: without an SRT that holds a word-count
+        estimate, which would be a plausible-looking wrong value.
+        """
+        from api.services.chunking import format_duration
+        from api.services.utils import get_srt_duration, parse_srt
+
+        duration = None
+        if (context.get("transcript_file") or "").lower().endswith(".srt"):
+            duration = format_duration(get_srt_duration(parse_srt(context.get("transcript", ""))) / 60000)
+        return {
+            "Project": context.get("project_name"),
+            "Program": (context.get("sst_context") or {}).get("program"),
+            "Duration": duration,
+            "Date Processed": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
 
     def _retry_context_section(self, context: Dict[str, Any]) -> str:
         """Validator flags and editorial feedback to carry into a re-run (RETRY-1).
@@ -1632,7 +1727,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 # re-validation below judges the ESCALATED work, not the stale
                 # pre-escalation output (mirrors the main phase loop) (#243 fix).
                 context[f"{phase_name}_output"] = res.get("output", "")
-                escalated_models[phase_name] = {"model": res.get("model") or target, "cost": res.get("cost")}
+                escalated_models[phase_name] = _escalated_phase_info(res, fallback_model=target)
                 reran = True
 
         if not reran:
@@ -1649,7 +1744,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
         if reval and reval.get("success"):
             verdict = self._parse_validation_result(reval.get("output", ""))
             verdict = await self._apply_style_lint(job_id, context, verdict)
-            escalated_models["validator"] = {"model": reval.get("model"), "cost": reval.get("cost")}
+            escalated_models["validator"] = _escalated_phase_info(reval)
         else:
             verdict = {"overall": "fail"}
 
@@ -1741,6 +1836,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                         project_fields = project_record.get("fields", {})
                         for key, name in SST_PROJECT_FIELD_MAP.items():
                             sst_context[key] = project_fields.get(name)
+                        sst_context["program"] = program_from_project_name(sst_context.get("program"))
                 except Exception as e:
                     logger.debug("Failed to fetch linked Project (non-fatal)", extra={"error": str(e)})
 
@@ -2460,6 +2556,10 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     exc_info=True,
                 )
 
+        # Get backend for this phase. Resolved before the chunking decision so the
+        # backend's output cap can drive it (#404).
+        backend = self.llm.get_backend_for_phase(phase_name)
+
         # Check for chunked formatter processing
         if phase_name == "formatter":
             chunking_config = self.llm.config.get("routing", {}).get("chunking", {})
@@ -2468,10 +2568,24 @@ Extract any name or spelling corrections that should be added to the glossary. S
 
                 transcript_file = context.get("transcript_file", "")
                 is_srt = transcript_file.lower().endswith(".srt")
+                # Chunk on projected output vs. what one call can emit, not on a
+                # static word threshold that said nothing about output size.
+                try:
+                    max_output_tokens = self.llm.get_backend_config(backend).get("max_tokens", DEFAULT_MAX_TOKENS)
+                except Exception:
+                    max_output_tokens = DEFAULT_MAX_TOKENS
+                # Reasoning that can't be switched off shares the same cap (#465).
+                formatter_model = await self.llm.resolve_model_id(
+                    model_override or self.llm.config.get("phase_models", {}).get("formatter"), job_id
+                )
+                reserve = await self.llm.reasoning_reserve(formatter_model)
+                if reserve:
+                    max_output_tokens = max(max_output_tokens - reserve, 1)
                 chunks = split_transcript(
                     context.get("transcript", ""),
                     is_srt=is_srt,
                     config=chunking_config,
+                    max_output_tokens=max_output_tokens,
                 )
                 if chunks is not None:
                     logger.info(
@@ -2498,8 +2612,6 @@ Extract any name or spelling corrections that should be added to the glossary. S
             {"role": "user", "content": user_message},
         ]
 
-        # Get backend for this phase
-        backend = self.llm.get_backend_for_phase(phase_name)
         logger.info(
             "Running phase",
             extra={
@@ -2532,6 +2644,11 @@ Extract any name or spelling corrections that should be added to the glossary. S
                 effective_timeout = 120
 
             # Call LLM with timeout
+            chat_kwargs: Dict[str, Any] = {}
+            reasoning = self._reasoning_payload(phase_name, backend)
+            if reasoning is not None:
+                chat_kwargs["reasoning"] = reasoning
+
             response: LLMResponse = await asyncio.wait_for(
                 self.llm.chat(
                     messages=messages,
@@ -2539,6 +2656,7 @@ Extract any name or spelling corrections that should be added to the glossary. S
                     model=model_override,
                     job_id=job_id,
                     phase=phase_name,
+                    **chat_kwargs,
                 ),
                 timeout=effective_timeout,
             )
@@ -3074,6 +3192,13 @@ Please format this transcript section:
                     {"role": "user", "content": user_message},
                 ]
 
+                # Chunked runs are still formatter work, so they honor the same
+                # reasoning control as the single-call path (#404).
+                chunk_kwargs: Dict[str, Any] = {}
+                chunk_reasoning = self._reasoning_payload("formatter", backend)
+                if chunk_reasoning is not None:
+                    chunk_kwargs["reasoning"] = chunk_reasoning
+
                 response = await asyncio.wait_for(
                     self.llm.chat(
                         messages=messages,
@@ -3081,6 +3206,7 @@ Please format this transcript section:
                         job_id=job_id,
                         phase="formatter",
                         model=model_override,
+                        **chunk_kwargs,
                     ),
                     timeout=effective_timeout,
                 )
@@ -3195,7 +3321,10 @@ Please format this transcript section:
             actual_model = next((r.get("model") for r in chunk_results if r.get("model")), None)
 
             # Merge text outputs
-            merged = merge_formatter_chunks([r["content"] for r in chunk_results])
+            merged = merge_formatter_chunks(
+                [r["content"] for r in chunk_results],
+                header_fields=self._chunk_header_fields(context),
+            )
 
             # Style-engine post-generation hook, run ONCE on the merged output
             # (not per-chunk -- see `_apply_style_post` for shadow/enforce/
@@ -3568,6 +3697,8 @@ The editor reviewed the formatted transcript and requests these changes:
             return prompt
 
         elif phase_name == "seo":
+            from api.services.chunking import formatter_dialogue
+
             analysis = context.get("analyst_output", "")
             formatted = context.get("formatter_output", "")
             if content_type == "short":
@@ -3587,7 +3718,7 @@ The editor reviewed the formatted transcript and requests these changes:
 And this formatted transcript:
 
 ---
-{formatted[:2000]}...
+{formatter_dialogue(formatted)}
 ---
 
 Generate SEO metadata as a markdown report."""

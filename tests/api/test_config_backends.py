@@ -31,6 +31,17 @@ def cfg_path(monkeypatch, tmp_path):
     return p
 
 
+@pytest.fixture(autouse=True)
+def no_live_alias_lookup(monkeypatch):
+    """GET/PATCH /config/models resolve "latest" aliases through the catalog;
+    keep every test here off the network (#499)."""
+
+    async def _unresolved(alias):
+        return None
+
+    monkeypatch.setattr("api.routers.config.model_roster.resolve_alias", _unresolved)
+
+
 def _backends(cfg_path):
     return json.loads(cfg_path.read_text())["backends"]
 
@@ -261,3 +272,51 @@ def test_assigning_model_with_empty_roster_is_rejected(api_client, monkeypatch, 
     saved = json.loads(p.read_text())
     assert saved["phase_models"] == {}
     assert saved["phase_backends"]["seo"] == "openrouter"
+
+
+SONNET_ALIAS = "~anthropic/claude-sonnet-latest"
+
+
+def _resolve_known(monkeypatch, known):
+    async def _resolve(alias):
+        return known.get(alias)
+
+    monkeypatch.setattr("api.routers.config.model_roster.resolve_alias", _resolve)
+
+
+def test_get_models_lists_latest_aliases_with_current_target(api_client, monkeypatch, tmp_path):
+    _setup_pair(monkeypatch, tmp_path, "openrouter")
+    _resolve_known(monkeypatch, {SONNET_ALIAS: "anthropic/claude-sonnet-5.5"})
+
+    resp = api_client.get("/api/config/models")
+    assert resp.status_code == 200, resp.text
+    aliases = {a["family"]: a for a in resp.json()["model_aliases"]}
+    assert list(aliases) == ["haiku", "sonnet", "opus"]
+    assert aliases["sonnet"] == {
+        "id": SONNET_ALIAS,
+        "name": "Latest Claude Sonnet",
+        "family": "sonnet",
+        "resolves_to": "anthropic/claude-sonnet-5.5",
+    }
+    assert aliases["opus"]["resolves_to"] is None  # unknown, still offered
+
+
+def test_assigning_alias_saves_the_alias_not_its_target(api_client, monkeypatch, tmp_path):
+    """phase_models keeps the alias so the phase follows new releases (#499)."""
+    p = _setup_pair(monkeypatch, tmp_path, "studio.riechers.co:8000")  # phase currently local
+    _resolve_known(monkeypatch, {SONNET_ALIAS: "anthropic/claude-sonnet-5.5"})
+
+    resp = api_client.patch("/api/config/models", json={"phase_models": {"seo": SONNET_ALIAS}})
+    assert resp.status_code == 200, resp.text
+    saved = json.loads(p.read_text())
+    assert saved["phase_models"]["seo"] == SONNET_ALIAS
+    assert saved["phase_backends"]["seo"] == "openrouter"  # an alias is cloud: reset off local
+
+
+def test_assigning_unresolvable_alias_is_rejected(api_client, monkeypatch, tmp_path):
+    p = _setup_pair(monkeypatch, tmp_path, "openrouter")
+
+    resp = api_client.patch("/api/config/models", json={"phase_models": {"seo": "~anthropic/claude-nope-latest"}})
+    assert resp.status_code == 400, resp.text
+    assert "alias" in resp.json()["detail"]
+    assert json.loads(p.read_text())["phase_models"] == {}

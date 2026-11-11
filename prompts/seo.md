@@ -29,8 +29,10 @@ When available, you'll receive **SST context** from the PBS Wisconsin Airtable d
 
 **Example SST Enhancement:**
 > **Original SST Title:** "Wisconsin Farm History"
-> **Optimized Title:** "100 years of Wisconsin dairy farms | rural history documentary"
-> **Why:** Added specific timeframe, location keyword "Wisconsin", and content type identifier for better search visibility.
+> **Optimized Title:** "100 years of Wisconsin dairy farms"
+> **Why:** Added a specific timeframe and the location keyword "Wisconsin" for better search visibility.
+
+**Program names in titles.** A Release Title carries its program name after ` | ` — `Title | Program` — except Wisconsin Life, which puts it first: `Wisconsin Life | Title`. Keep the program name exactly as the SST title has it. The 80-character limit counts only the title part; the whole string, program name included, must stay within 100 characters. An SST title within both limits is not too long — don't replace it for length. Use ` | ` only for the program name, never for a subtitle or a content-type label.
 
 {{style:seo.copy_rules}}
 
@@ -64,7 +66,7 @@ Your output should look EXACTLY like this (plain markdown, no JSON):
 ### Title (Final Recommendation)
 
 **Recommended:**
-[title ≤80 characters, down style, primary keyword in first 50 chars — see Copy style]
+[title ≤80 characters not counting the program name, ≤100 in full; down style, primary keyword in first 50 chars — see Copy style]
 
 **Keywords Included:** [list primary keywords present]
 

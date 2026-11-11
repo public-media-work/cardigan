@@ -3,8 +3,8 @@
 This guide is a single, high-signal entry point for agents that need to interface with the Editorial Assistant's API and MCP services.
 
 > **Base URL — production vs local.** For real/production work, target the
-> homelab-hosted container: **`http://cardigan01:8100`** (Tailscale MagicDNS name,
-> CTID 103; LAN fallback `192.168.1.42:8100`). Use `http://localhost:8100` only
+> production service name **`https://cardigan.riechers.co`** (from the home network;
+> off it, the name hits a Cloudflare Access login). Use `http://localhost:8100` only
 > for local development. The examples below use `localhost` for brevity —
 > substitute the production base URL for anything other than local dev. See
 > `CLAUDE.md` › "Deployment Environments" for the full rule.
@@ -30,7 +30,7 @@ This guide is a single, high-signal entry point for agents that need to interfac
 - Use MCP tools to list, load, and save project artifacts without touching the API directly.
 
 ## API Interface (HTTP)
-Base URL: `http://cardigan01:8100` (production/homelab) · `http://localhost:8100` (local dev only)
+Base URL: `https://cardigan.riechers.co` (production/homelab) · `http://localhost:8100` (local dev only)
 
 ### Health
 - `GET /` -> `{ "status": "ok", "version": "3.0.0-dev" }`
