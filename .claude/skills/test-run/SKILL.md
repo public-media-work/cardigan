@@ -89,7 +89,7 @@ Use one command per Bash call, with literal absolute paths: no shell variables, 
 | Field | Meaning |
 |---|---|
 | `job_word_count` vs `dialogue_words` | Prod's `job.word_count` counts caption numbers and timecodes. `dialogue_words` is what completeness and chunking use (#404). |
-| `turn_markers_>>`, `plain_name_labels`, `bracket_or_paren_cues` | Caption convention. With no `>>`, the timestamp phase gets no boundary candidates (#449). |
+| `turn_markers_>>`, `plain_name_labels`, `dash_name_labels`, `bracket_or_paren_cues` | Caption convention. `dash_name_labels` counts `- Name:` labels. With no `>>`, the timestamp phase gets no boundary candidates (#449), even when a file has dozens of dash labels. |
 | `captions_after_>>_split` | Captions after the #269 interior-`>>` split that the formatter receives. |
 | `chunking` | `single call`, or chunk word counts. |
 | `timestamp_runs` | Whether prod runs the optional timestamp phase (long content). |
