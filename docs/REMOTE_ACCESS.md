@@ -1,5 +1,13 @@
 # Remote Access — Temporary Preview via Tailscale Funnel
 
+> **Superseded (2026-10-26).** The Funnel was replaced by a Cloudflare Tunnel in
+> July, and at the cardigan02 cutover the htpasswd preview vhost gave way to the
+> full dashboard at `https://cardigan.riechers.co`, behind a Cloudflare Access
+> email allowlist. Add or remove people in the Zero Trust dashboard. The tunnel
+> runs in CT 112 (`preview01`); its ingress is `/etc/cloudflared/config.yml`, and
+> each origin also needs an egress allow in `/etc/pve/firewall/112.fw`. The rest
+> of this page is kept as history.
+
 How to give one or two trusted PBS Wisconsin editors a password-protected door
 into *The Metadata Neighborhood* running on the homelab box (`cardigan01`,
 CTID 103) — with **nothing for them to install**.

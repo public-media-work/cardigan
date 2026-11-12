@@ -45,7 +45,7 @@ def _limits_rules(**overrides) -> StyleRules:
         "meta": {"version": 1},
         "limits": {
             "fields": {
-                "title": {"max": 80},
+                "title": {"max": 80, "full_max": 100},
                 "short_description": {"max": 90},
                 "keywords": {"count": {"min": 15, "max": 20}},
                 "social_tags": {},
@@ -281,6 +281,37 @@ class TestCheckFieldLimitsStringMax:
         short_desc = "x" * 91
         violations = check_field_limits({"short_description": short_desc}, rules, "seo")
         assert len(violations) == 1
+
+
+class TestCheckFieldLimitsTitle:
+    """#459: ``max`` measures the title part, ``full_max`` the whole string."""
+
+    IWP = " | Inside Wisconsin Politics"
+
+    def test_program_suffix_does_not_count_toward_max(self):
+        title = "x" * 59 + self.IWP  # 87 in full, as on 6POL0215
+        assert check_field_limits({"title": title}, _limits_rules(), "seo") == []
+
+    def test_title_part_over_max_violates(self):
+        title = "x" * 81 + " | Here & Now"  # 94 in full, under full_max
+        violations = check_field_limits({"title": title}, _limits_rules(), "seo")
+        assert [v.rule_id for v in violations] == ["limits.title.max"]
+        assert "81" in violations[0].message
+        assert "program name" in violations[0].message
+
+    def test_wisconsin_life_prefix_does_not_count_toward_max(self):
+        title = "Wisconsin Life | " + "x" * 80
+        assert check_field_limits({"title": title}, _limits_rules(), "seo") == []
+
+    def test_whole_string_over_full_max_violates(self):
+        title = "x" * 75 + self.IWP  # 103 in full
+        violations = check_field_limits({"title": title}, _limits_rules(), "seo")
+        assert [v.rule_id for v in violations] == ["limits.title.full_max"]
+        assert "103" in violations[0].message
+
+    def test_title_without_program_is_measured_whole(self):
+        violations = check_field_limits({"title": "x" * 81}, _limits_rules(), "seo")
+        assert [v.rule_id for v in violations] == ["limits.title.max"]
 
 
 # ---------------------------------------------------------------------------

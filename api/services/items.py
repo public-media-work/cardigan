@@ -39,6 +39,7 @@ from api.models.item import (
     ReviewState,
 )
 from api.services.style_engine.rules import load_rules
+from api.services.style_engine.titles import PREFIX_PROGRAMS, TITLE_SEPARATOR, split_title  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +65,6 @@ LADDER_REVIEWED = frozenset(
     }
 )
 LADDER_FLAGGED = "Producer Issue - See Promo Notes"
-
-# Release Title convention (ruling on #459, 2026-10-22): the program name is
-# appended — "Title | Program" — except for these programs, which prepend it
-# for analytics scripting.
-TITLE_SEPARATOR = " | "
-PREFIX_PROGRAMS: tuple[str, ...] = ("Wisconsin Life",)
 
 # Why an item is unavailable, when the reason is structural rather than per-job.
 COPY_GENERATION_OFF = "copy_generation_off"
@@ -429,22 +424,6 @@ def premiere_date_proposals(sst_context: Optional[Mapping[str, Any]]) -> dict[st
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
-
-
-def split_title(title: str) -> tuple[str, Optional[str]]:
-    """Split a Release Title into (title part, program name or None).
-
-    "Wisconsin Life | Title" -> ("Title", "Wisconsin Life");
-    "Title | Program" -> ("Title", "Program"); no separator -> (title, None).
-    """
-    for program in PREFIX_PROGRAMS:
-        prefix = program + TITLE_SEPARATOR
-        if title.startswith(prefix):
-            return title[len(prefix) :], program
-    if TITLE_SEPARATOR in title:
-        part, program = title.rsplit(TITLE_SEPARATOR, 1)
-        return part, program
-    return title, None
 
 
 _TERM_RE = re.compile(r"[A-Z][\w'’-]*[a-z][\w'’-]*")
