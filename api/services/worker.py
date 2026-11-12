@@ -104,14 +104,16 @@ SST_PROJECT_FIELD_MAP = {
     "project_description": "Project Description",
 }
 
-# Projects are often season-scoped ("Wisconsin Life | Season 13"); the
-# formatter's **Program:** header is the show, and the validator holds it to
-# the SST value, so the season designation comes off (cardigan02 job 28).
-_SEASON_SUFFIX = re.compile(r"\s*\|\s*Season\s+\d+\s*$", re.IGNORECASE)
+# Projects are often season-scoped ("Wisconsin Life | Season 13", or a bare
+# year: "The Great Wisconsin Quilt Show | 2026"). The formatter's **Program:**
+# header is the show, and the validator holds it to the SST value, so the
+# season designation comes off (cardigan02 job 28; 6GWQ2603, #526). Only a
+# bare year is a season: "Here & Now | 2026 Election" is a different program.
+_SEASON_SUFFIX = re.compile(r"\s*\|\s*(?:Season\s+\d+|(?:19|20)\d{2})\s*$", re.IGNORECASE)
 
 
 def program_from_project_name(name: Any) -> Any:
-    """The program a Project name stands for: its name minus a "| Season N" suffix."""
+    """The program a Project name stands for: its name minus a "| Season N" or "| YYYY" suffix."""
     if not isinstance(name, str):
         return name
     return _SEASON_SUFFIX.sub("", name).strip() or name
