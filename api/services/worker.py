@@ -3697,6 +3697,8 @@ The editor reviewed the formatted transcript and requests these changes:
             return prompt
 
         elif phase_name == "seo":
+            from api.services.chunking import formatter_dialogue
+
             analysis = context.get("analyst_output", "")
             formatted = context.get("formatter_output", "")
             if content_type == "short":
@@ -3716,7 +3718,7 @@ The editor reviewed the formatted transcript and requests these changes:
 And this formatted transcript:
 
 ---
-{formatted[:2000]}...
+{formatter_dialogue(formatted)}
 ---
 
 Generate SEO metadata as a markdown report."""

@@ -1,6 +1,9 @@
 ---
 name: test-run
 description: Use when asked to run a Cardigan job locally with coding agents instead of prod. Triggers include a supervised run, a simulated run, a test run, "run the agent instructions locally", generating metadata from a caption/SRT file without deploying, or checking whether open fix PRs would let a job complete. Also covers a full local worker run (real API + worker against a throwaway DB) when bug-testing a deployment or worker change, and gathering evidence for pipeline bugs from a real transcript.
+metadata:
+  skill-ops-scope: project
+  skill-ops-owner: public-media-work/cardigan
 ---
 
 # Supervised test run
@@ -71,7 +74,7 @@ Use one command per Bash call, with literal absolute paths: no shell variables, 
    - Expect this on Sonnet/Opus 5.x subagents writing a long full-transcript result (formatter, timestamp). On 6POL0216 every such run stopped with `stop_details.category: "reasoning_extraction"`, Anthropic's anti-distillation safeguard. Haiku and OpenRouter calls were not affected.
    - The UI notice hides the category. Find it in the subagent's JSONL (`~/.claude/projects/<slug>/<session>/subagents/agent-*.jsonl`) by searching for `stop_details`, and record the category and the request ID verbatim in RUNLOG, along with the transcript path.
    - At most **one identical** retry. If it stops again, fall back to OpenRouter for that phase under the default backend. If the operator ruled out paid calls, ask instead. Don't escalate a subagent to Opus to get past a stop: on 6POL0216, Opus 5.5 was stopped the same way after 96 s.
-   - On 6POL0216, every Sonnet-tier formatter and timestamp run that held most of the transcript was stopped; only the last-third chunk got through (before the round-3 brief rewording, which has not yet faced a long transcript). Dispatch once plus its identical retry, then go straight to `replay` rather than spending more time. Update this line with what the next run shows.
+   - On 6POL0216, every Sonnet-tier formatter and timestamp run that held most of the transcript was stopped; only the last-third chunk got through (before the round-3 brief rewording). On 6GWQ2603 (Nov 2026, 68 min, 8.4k dialogue words, round-3 brief), the single-call Sonnet formatter and timestamp both got through with no stop, so the reworded brief has now passed one long transcript. Dispatch once plus its identical retry, then go straight to `replay` rather than spending more time. Update this line with what the next run shows.
    - **Never reword, summarise, split or re-chunk the input or the brief to get past a stop.** That is evading the classifier, not retrying, and it would also no longer test prod's prompt. If the subagent path needs to work for these phases, the route is Anthropic support with the request IDs.
    - Fallback: `harness.py replay --run-dir <unit> <phase> [--chunk N] [--newest]` sends the captured prompt unchanged. `--newest` picks the family's newest model through prod's roster. It sends the captured `max_tokens` and a reasoning control **only if the code under test passed one**: plain main sends none, and #409 adds `{enabled: false}` for the formatter. `notes` says when none was captured. Read `replay/telemetry.json`: `finish_reason` (`length` means truncated), `reasoning_tokens` and `headroom_tokens`, plus `notes`. Some newer models reject a disabled-reasoning control with a 400. `replay` then resends with reasoning on and records that in `notes`, which is a finding.
      - Mark wants `--newest`, the family's newest model, for replays unless he says otherwise. In Oct 2026 that was `anthropic/claude-sonnet-5.5`, which **requires** reasoning on (#465), so expect the 400-and-resend on every formatter replay from a stack that disables reasoning.
@@ -100,7 +103,7 @@ This mode runs the real API and worker against a throwaway database, so the job 
 
 1. **Code.** `harness.py code --dest <cohort>/_code-main`, with `--prs` for a stack, as in step 1 above. The tree has no venv, so use the main checkout's.
 2. **Unit.** Make `<cohort>/<label>-full/transcripts/` and copy or download the SRT into it.
-   - If the job already exists on prod, its exact transcript is on the host: `scp cardigan01:<transcripts dir>/archive/<file>.srt`. The prod path changes with the deploy (Docker volume vs. native state dir), so look it up, don't assume it.
+   - If the job already exists on prod, its exact transcript is on the prod host (cardigan02 since the 2026-10-26 cutover): `scp root@cardigan02.riechers.co:<transcripts dir>/archive/<file>.srt`. The native state dir is under `/var/lib/cardigan`; check `TRANSCRIPTS_DIR` in `/etc/cardigan/cardigan.env` rather than assuming it.
    - The API serves only outputs, not the source file.
 3. **API.** Use `run_in_background`, all paths absolute, and no variables:
    `DATABASE_PATH=<unit>/run.db OUTPUT_DIR=<unit>/OUTPUT TRANSCRIPTS_DIR=<unit>/transcripts <main checkout>/venv/bin/uvicorn api.main:app --port 8199 --app-dir <code tree>`

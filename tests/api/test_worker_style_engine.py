@@ -1770,6 +1770,42 @@ class TestTimestampUserMessagePromptProfile:
         assert "Output a timestamp report with TWO sections:" in prompt
 
 
+class TestSeoUserMessageTranscript:
+    """#454: SEO sees the whole dialogue, not the first 2,000 characters of
+    a document that is mostly header and review notes."""
+
+    FORMATTED = (
+        "# Formatted Transcript\n\n"
+        "**Project:** 6POL0215\n**Program:** Inside Wisconsin Politics\n"
+        "**Duration:** 28:40\n**Date Processed:** 2026-10-08\n\n"
+        "<!-- REVIEW NOTES:\n" + "- [00:01:02] Uncertain spelling of a name.\n" * 40 + "-->\n\n"
+        "---\n\n"
+        "**Zac Schultz:** Welcome to Inside Wisconsin Politics.\n\n"
+        + "".join(f"**Speaker {i % 3}:** Turn number {i} of the dialogue.\n\n" for i in range(200))
+        + "**Zac Schultz:** That's the last word of the episode.\n\n"
+        "**Status:** ready_for_review\n"
+    )
+
+    def _prompt(self) -> str:
+        worker = JobWorker.__new__(JobWorker)
+        worker.llm = MagicMock()
+        worker.llm.config = {}
+        context = {"project_name": "6POL0215", "analyst_output": ANALYST_TABLE, "formatter_output": self.FORMATTED}
+        return worker._build_phase_prompt_base("seo", context)
+
+    def test_the_whole_dialogue_reaches_seo(self):
+        prompt = self._prompt()
+        assert "That's the last word of the episode." in prompt
+        assert "Turn number 199 of the dialogue." in prompt
+
+    def test_header_and_review_notes_are_left_out(self):
+        prompt = self._prompt()
+        assert "Uncertain spelling of a name" not in prompt
+        assert "**Date Processed:**" not in prompt
+        assert "**Status:**" not in prompt
+        assert "...\n---" not in prompt  # no truncation marker
+
+
 # ---------------------------------------------------------------------------
 # 9. _load_agent_prompt graceful fallback (review fix #1, PR #295)
 #
