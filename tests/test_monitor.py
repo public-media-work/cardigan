@@ -316,6 +316,14 @@ def test_derive_web_url_none_for_portless_host():
     assert monitor._derive_web_url("https://cardigan01.tail1234.ts.net") is None
 
 
+def test_prod_default_is_the_service_name_with_explicit_web_url():
+    # One origin serves the SPA and /api/, so there's no :8100 to derive from;
+    # the explicit web_url must survive _normalize or the Web probe is skipped.
+    prod = monitor._normalize(dict(next(i for i in monitor.DEFAULT_INSTANCES if i["name"] == "prod")))
+    assert prod["url"] == "https://cardigan.riechers.co"
+    assert prod["web_url"] == "https://cardigan.riechers.co"
+
+
 def test_web_unknown_when_not_checked_does_not_downgrade():
     raw = RawProbes(
         root=ROOT_OK,

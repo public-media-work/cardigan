@@ -34,7 +34,7 @@ export PBSWI_ROOT="$HOME/Developer/pbswi"                # or the SSD path
 export YOUTUBE_TOKEN_PATH="$PBSWI_ROOT/station-analytics/credentials/work/token.json"
 
 # Cardigan API (production is the default per CLAUDE.md)
-export CARDIGAN_API_URL="http://cardigan01:8100"
+export CARDIGAN_API_URL="https://cardigan.riechers.co"
 # export CARDIGAN_API_KEY=...   # only if the deployment has auth enabled
 ```
 
