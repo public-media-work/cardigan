@@ -327,6 +327,21 @@ def cmd_sst(a):
 # --------------------------------------------------------------------------- intake
 
 
+# Caption speaker-label conventions, counted separately so the intake legend shows which one a
+# file uses before the timestamp phase (#528). A dash-prefixed label ("- Kay Simmons:") is not a
+# ">>" turn marker or a bare "Name:" label, and the timestamp pre-stage treats them differently (#449).
+_BARE_LABEL_RE = re.compile(r"^[A-Z][\w .'-]{1,40}:\s", re.MULTILINE)
+_DASH_LABEL_RE = re.compile(r"^-\s*[A-Z][\w.' -]{0,40}:\s", re.MULTILINE)
+
+
+def count_speaker_labels(srt: str) -> dict[str, int]:
+    """Count bare ``Name:`` and dash-prefixed ``- Name:`` speaker labels at line starts."""
+    return {
+        "plain_name_labels": len(_BARE_LABEL_RE.findall(srt)),
+        "dash_name_labels": len(_DASH_LABEL_RE.findall(srt)),
+    }
+
+
 def cmd_intake(a):
     run = Run(a.run_dir)
     wm = load_code(run)
@@ -355,7 +370,7 @@ def cmd_intake(a):
         "captions": len(caps),
         "captions_after_>>_split": len(parse_srt(split)),
         "turn_markers_>>": run.srt.count(">>"),
-        "plain_name_labels": len(re.findall(r"(?:^|\n)[A-Z][\w .'-]{1,40}:\s", run.srt)),
+        **count_speaker_labels(run.srt),
         "bracket_or_paren_cues": len(re.findall(r"[\[(][^\])]*[\])]", text)),
         "content_type": ctx["content_type"],
         "timestamp_runs": w._should_run_timestamp_phase(run.job, metrics, run.srt_path),
