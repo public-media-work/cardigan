@@ -95,6 +95,34 @@ class TestFormatterContractIsNotContradicted:
         ), f"validator.checklist.full mentions needs_review but never states it is not a failure: {window!r}"
 
 
+class TestParagraphRuleAgreesWithTheFormatter:
+    """#525 (VAL-P). ``prompts/formatter.md`` forbids paragraph breaks inside a
+    speaker's turn in multi-speaker transcripts. The checklist used to say only
+    "Paragraphs and sections are properly formatted". On 6GWQ2603 the validator
+    read that as "break up long turns", failed a 14-minute single-turn opening,
+    and paused the job for QA review even though the output was correct.
+    """
+
+    def test_formatter_prompt_still_forbids_breaks_within_a_turn(self):
+        """Guard the premise."""
+        formatter = FORMATTER_PROMPT_PATH.read_text()
+        assert re.search(r"do not add paragraph breaks within a (single )?speaker'?s turn", formatter, re.I)
+
+    def test_checklist_says_an_unbroken_turn_is_correct(self):
+        section = _section(_checklist(), "Formatter Phase")
+        para = " ".join(ln.strip() for ln in section.splitlines())
+        assert re.search(r"paragraph", para, re.I), "Formatter Phase checklist says nothing about paragraphs"
+        assert re.search(r"one unbroken block", para, re.I) and re.search(r"never a flag", para, re.I), (
+            "validator.checklist.full does not state that one unbroken block per speaker turn is "
+            "correct, so the validator may fail long single-speaker turns that the formatter is "
+            "required to produce."
+        )
+
+    def test_checklist_has_no_bare_paragraph_formatting_rule(self):
+        """The old vague bullet must not come back alongside the explicit one."""
+        assert "Paragraphs and sections are properly formatted" not in _checklist()
+
+
 class TestSeoChecklistJudgesFinalValuesOnly:
     def test_seo_section_scopes_limits_to_final_recommendation(self):
         """The SEO agent shows its revision work (job 35: 109 -> 97 -> 90 chars).
