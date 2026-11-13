@@ -30,7 +30,7 @@ Don't open with a questionnaire. State the defaults in one short message and sta
 | Setting | Default | Change it when |
 |---|---|---|
 | **Code under test** | Latest `origin/main`, no PRs. `code` fetches before exporting. | The operator names PRs to stack. If they want PRs **landed** first, land them before step 1, so the code under test is main again. |
-| **Backend** | Subagent per phase. After one identical retry of a classifier stop, fall back to OpenRouter `replay --newest` for that phase. On 6POL0216 (Oct 2026, sonnet-5.5, 19 min) that cost $0.22 for the formatter and $0.07 for timestamp. The default covers it. | The operator says no paid calls (then stop and ask at the first stop) or OpenRouter for everything. |
+| **Backend** | Subagent per phase. After one identical retry of a classifier stop, fall back to OpenRouter `replay --newest` for that phase. On 6POL0216 (Oct 2026, sonnet-5.5, 19 min) that cost USD 0.22 for the formatter and USD 0.07 for timestamp. The default covers it. | The operator says no paid calls (then stop and ask at the first stop) or OpenRouter for everything. |
 | **Media ID** | The caption file's stem when it looks like one (`6POL0217.srt` → `6POL0217`). `sst --live` confirms it; no record means none. | Archival or ad-hoc files (`Ojibwe_Music.srt`) have no media ID. |
 | **Write-up** | Private only: the cohort goes to the private repo. Ask before filing issues, commenting on PRs or opening a public docs PR. | The operator asks for issues or a docs PR up front. |
 
