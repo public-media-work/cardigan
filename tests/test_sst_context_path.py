@@ -367,7 +367,10 @@ def test_validator_checklist_has_factual_consistency_item():
         ("Wisconsin Life | Season 13", "Wisconsin Life"),
         ("Wisconsin Life|season 7 ", "Wisconsin Life"),
         ("Madison Symphony at 100", "Madison Symphony at 100"),
+        ("The Great Wisconsin Quilt Show | 2026", "The Great Wisconsin Quilt Show"),
+        ("The Great Wisconsin Quilt Show|2025 ", "The Great Wisconsin Quilt Show"),
         ("Here & Now | 2026 Election", "Here & Now | 2026 Election"),
+        ("Sesquicentennial | 1848", "Sesquicentennial | 1848"),
         (None, None),
     ],
 )

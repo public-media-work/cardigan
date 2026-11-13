@@ -398,7 +398,10 @@ prompt_blocks:
         the header/review-notes block). Only leakage into the dialogue is a violation.
       - Speaker labels are consistent throughout (same speaker isn't labeled differently)
       - No content appears past the actual episode duration
-      - Paragraphs and sections are properly formatted
+      - Paragraphs follow the formatter contract. In a multi-speaker transcript, each speaker
+        turn is ONE unbroken block beneath the speaker's name. That is correct however long
+        the turn runs (a 14-minute opening monologue included), and an unbroken turn is never a
+        flag. Only single-speaker, narration-only transcripts are split into paragraphs.
       - No obvious truncation (content doesn't end abruptly mid-sentence)
 
       ### SEO Phase
